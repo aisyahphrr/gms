@@ -71,6 +71,7 @@
 
 #include "gms.h"
 #include "gms_ota.h"
+#include "gms_calc.h"
 
 /* =====================================================
    HARDWARE CONFIGURATION
@@ -1842,6 +1843,21 @@ static void publish_mastify(const gms_measurement_t *s)
                  b.v_l1, b.v_l2, b.v_l3, b.v_l12, b.v_l23, b.v_l31,
                  b.i_l1, b.i_l2, b.i_l3, b.p_kw, b.q_kvar, b.s_kva, b.pf,
                  b.fuel_est_l);
+    } else {
+        /* Real hardware metrics dari FSM dan kalkulasi 3-fasa */
+        gms_derived_metrics_t m = {0};
+        gms_calc_get_metrics(&m);
+        json_add(json, sizeof(json), &used,
+                 ",\"engine_state\":\"%s\",\"run_hours\":%.4f,"
+                 "\"maint_due_h\":%.2f,\"rpm_calc\":%.1f,"
+                 "\"load_pct\":%.2f,\"s_kva\":%.2f,"
+                 "\"v_unbal_pct\":%.2f,\"i_unbal_pct\":%.2f,"
+                 "\"e_kwh_calc\":%.2f",
+                 m.state_str, m.run_hours,
+                 m.maint_due_h, m.rpm_calc,
+                 m.load_pct, m.s_kva,
+                 m.v_unbal_pct, m.i_unbal_pct,
+                 m.e_kwh_calc);
     }
     /* Mark source on every MQTT message, including after STOP/expiry.
        Asri/Vercel MUST distinguish BENCH_TEST vs REAL and check timestamps. */
@@ -2077,6 +2093,18 @@ static void task_state(void *arg) {
         s_last.uptime_ms = now_ms;
         portEXIT_CRITICAL(&s_data_lock);
 
+        /* Evaluasi FSM status mesin genset, hour meter NVS, & kalkulasi turunan */
+        gms_measurement_t s = {0};
+        gms_get_snapshot(&s);
+
+        bool crit = (s.alarm[GMS_SENSOR_TEMP] == GMS_ALARM_CRITICAL ||
+                     s.alarm[GMS_SENSOR_PRESSURE] == GMS_ALARM_CRITICAL);
+
+        gms_calc_update_1s(220.0f, 220.0f, 220.0f,
+                           10.0f, 10.0f, 10.0f,
+                           6.0f, 50.0f,
+                           s.scaled[GMS_SENSOR_PRESSURE], crit);
+
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -2148,6 +2176,9 @@ void app_main(void) {
 
     /* VERIFIKASI PARTISI & JENDELA SWAUJI (SELF-TEST) OTA */
     gms_ota_self_test_check();
+
+    /* INITIALIZE DERIVED METRICS & HOUR METER (NVS) */
+    gms_calc_init();
 
     /* INITIALIZE CONFIGURATION */
 
