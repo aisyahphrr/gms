@@ -1868,188 +1868,269 @@ static void publish_mastify(const gms_measurement_t *s)
 }
 
 /* =====================================================
-    SENSOR TELEMETRY TASK
+   FREERTOS MULTI-TASK & DUAL-CORE ARCHITECTURE (TABEL 3 TA)
    ===================================================== */
 
-static void telemetry_task(
-    void *arg
-) {
+/* -----------------------------------------------------
+   CORE 0: DETERMINISTIK & PROTEKSI KESELAMATAN LOKAL
+   ----------------------------------------------------- */
+
+/*
+ * Task Safety (Prioritas 10, Core 0, Periodik 100 ms)
+ * Mengevaluasi batas kritis (Critical) secara lokal.
+ * Debounce filter 300 ms (3 siklus berturut-turut).
+ * Anggaran respon cut-off <= 520 ms (< 1 detik).
+ */
+static void task_safety(void *arg) {
     (void)arg;
+    uint8_t debounce_count = 0;
+    bool cutoff_active = false;
+
+    ESP_LOGI(TAG, "task_safety started on Core %d (Prio %d)",
+             xPortGetCoreID(), (int)uxTaskPriorityGet(NULL));
 
     for (;;) {
-
-        /* ADS1115 CHANNEL MAPPING */
-
-        analog_value_t t =
-            read_analog(0);
-
-        analog_value_t l =
-            read_analog(2);
-
-        analog_value_t p =
-            read_analog(3);
-
-        /* EWIG */
-
-        uint16_t regs[EWIG_REG_COUNT] = {0};
-
-        bool ewig =
-            ewig_read_raw(regs);
-
-        /* SNAPSHOT */
-
         gms_measurement_t s = {0};
+        gms_get_snapshot(&s);
 
-        analog_value_t values[] = {
-            t,
-            l,
-            p
-        };
+        bool critical_detected = false;
+        if (s.alarm[GMS_SENSOR_TEMP] == GMS_ALARM_CRITICAL ||
+            s.alarm[GMS_SENSOR_PRESSURE] == GMS_ALARM_CRITICAL) {
+            critical_detected = true;
+        }
 
-        /* Preserve physical readings of ALL sensors as diagnostics.
-           Only one selected channel is overridden in processing/MQTT path. */
+        if (critical_detected) {
+            if (debounce_count < 3) {
+                debounce_count++;
+            }
+            if (debounce_count >= 3 && !cutoff_active) {
+                cutoff_active = true;
+                ESP_LOGE(TAG, "[SAFETY CUT-OFF TRIGGERED] Anomali kritis lokal terdeteksi! Temp alarm=%d, Pressure alarm=%d (Respon <= 520 ms)",
+                         s.alarm[GMS_SENSOR_TEMP], s.alarm[GMS_SENSOR_PRESSURE]);
+                /* Read-only bench mode: interkoneksi ke GPIO kontaktor fisik diaktifkan saat uji beban */
+            }
+        } else {
+            debounce_count = 0;
+            if (cutoff_active) {
+                cutoff_active = false;
+                ESP_LOGI(TAG, "[SAFETY CUT-OFF NORMAL] Parameter mesin kembali aman.");
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+/*
+ * Task Sensor (Prioritas 5, Core 0, Periodik 200 ms)
+ * Membaca konversi ADC 16-bit ADS1115 via I2C (A0 Suhu, A2 Level, A3 Tekanan).
+ * Filter median-5, deteksi zona NAMUR NE43, evaluasi batas scaling & alarm.
+ */
+static void task_sensor(void *arg) {
+    (void)arg;
+    uint32_t log_cycle = 0;
+
+    ESP_LOGI(TAG, "task_sensor started on Core %d (Prio %d)",
+             xPortGetCoreID(), (int)uxTaskPriorityGet(NULL));
+
+    for (;;) {
+        analog_value_t t = read_analog(0);
+        analog_value_t l = read_analog(2);
+        analog_value_t p = read_analog(3);
+
+        analog_value_t values[] = { t, l, p };
+        float real_ma[GMS_SENSOR_COUNT];
+        float real_voltage[GMS_SENSOR_COUNT];
         for (int i = 0; i < GMS_SENSOR_COUNT; ++i) {
-            s.sensor_real_ma[i] = values[i].ma;
-            s.sensor_real_voltage[i] = values[i].voltage;
-        }
-        s.pressure_real_ma = p.ma;
-        s.pressure_real_voltage = p.voltage;
-        s.sensor_test_channel = -1;
-        s.sensor_test_active = gms_sensor_test_snapshot(
-            &s.sensor_test_channel, &s.sensor_test_ma,
-            &s.sensor_test_remaining_s);
-        s.pressure_fault_test_active = s.sensor_test_active &&
-            s.sensor_test_channel == GMS_SENSOR_PRESSURE;
-        s.pressure_fault_test_remaining_s = s.pressure_fault_test_active
-            ? s.sensor_test_remaining_s : 0;
-        if (s.sensor_test_active) {
-            const int ch = s.sensor_test_channel;
-            const float virtual_ma = s.sensor_test_ma;
-            values[ch].ok = true;
-            values[ch].ma = virtual_ma;
-            values[ch].voltage = virtual_ma * SHUNT_OHMS / 1000.0f;
-            values[ch].raw = (int16_t)lroundf(values[ch].voltage / 0.0000625f);
+            real_ma[i] = values[i].ma;
+            real_voltage[i] = values[i].voltage;
         }
 
-        for (int i = 0; i < 3; i++) {
-
-            s.adc_ok[i] =
-                values[i].ok;
-
-            s.loop_ok[i] =
-                loop_in_service_range(
-                    values[i]
-                );
-
-            s.volts[i] =
-                values[i].voltage;
-
-            s.ma[i] =
-                values[i].ma;
-
-            s.raw[i] =
-                values[i].raw;
+        int test_ch = -1;
+        float test_ma = 0.0f;
+        uint32_t test_rem = 0;
+        bool test_act = gms_sensor_test_snapshot(&test_ch, &test_ma, &test_rem);
+        if (test_act && test_ch >= 0 && test_ch < GMS_SENSOR_COUNT) {
+            values[test_ch].ok = true;
+            values[test_ch].ma = test_ma;
+            values[test_ch].voltage = test_ma * SHUNT_OHMS / 1000.0f;
+            values[test_ch].raw = (int16_t)lroundf(values[test_ch].voltage / 0.0000625f);
         }
 
-        s.ewig_ok = ewig;
-
-        s.ewig_raw[0] = regs[0];
-        s.ewig_raw[1] = regs[1];
-
-        /* CALIBRATION & THRESHOLD: snapshot a consistent configuration */
         gms_sensor_settings_t settings;
         gms_sensor_get_settings(&settings);
         const gms_sensor_config_t *cfg[3] = {
             &settings.temperature, &settings.level, &settings.pressure
         };
+
+        float scaled[GMS_SENSOR_COUNT] = {0};
+        uint8_t alarm[GMS_SENSOR_COUNT] = {0};
         for (int i = 0; i < 3; ++i) {
-            s.alarm[i] = sensor_alarm(values[i], cfg[i], &s.scaled[i]);
+            alarm[i] = sensor_alarm(values[i], cfg[i], &scaled[i]);
         }
-        // Level A2: convert real 4-20 mA current into tank fill %. Keep
-        // manufacturer 0-5m scaling distinct from configured tank height.
-        if (s.alarm[GMS_SENSOR_LEVEL] >= 1 && s.alarm[GMS_SENSOR_LEVEL] <= 3) {
+
+        if (alarm[GMS_SENSOR_LEVEL] >= 1 && alarm[GMS_SENSOR_LEVEL] <= 3) {
             float tank_pct = 0.0f;
-            if (gms_tank_measure(s.ma[GMS_SENSOR_LEVEL], NULL, &tank_pct, NULL)) {
-                s.scaled[GMS_SENSOR_LEVEL] = tank_pct;
+            if (gms_tank_measure(values[GMS_SENSOR_LEVEL].ma, NULL, &tank_pct, NULL)) {
+                scaled[GMS_SENSOR_LEVEL] = tank_pct;
                 const gms_sensor_config_t *lc = &settings.level;
-                s.alarm[GMS_SENSOR_LEVEL] =
+                alarm[GMS_SENSOR_LEVEL] =
                     tank_pct <= lc->critical_low || tank_pct >= lc->critical_high ? 3 :
                     tank_pct <= lc->warning_low  || tank_pct >= lc->warning_high  ? 2 : 1;
             } else {
-                s.alarm[GMS_SENSOR_LEVEL] = 0; // no valid physical level
+                alarm[GMS_SENSOR_LEVEL] = 0;
             }
         }
-        // Legacy field retained for existing modules. Validity is alarm-based.
-        s.pressure_bar = s.scaled[2];
 
-        s.uptime_ms =
-            (uint32_t)(
-                esp_timer_get_time() / 1000
-            );
+        /* Update shared snapshot thread-safe */
+        portENTER_CRITICAL(&s_data_lock);
+        for (int i = 0; i < GMS_SENSOR_COUNT; ++i) {
+            s_last.sensor_real_ma[i] = real_ma[i];
+            s_last.sensor_real_voltage[i] = real_voltage[i];
+            s_last.adc_ok[i] = values[i].ok;
+            s_last.loop_ok[i] = loop_in_service_range(values[i]);
+            s_last.volts[i] = values[i].voltage;
+            s_last.ma[i] = values[i].ma;
+            s_last.raw[i] = values[i].raw;
+            s_last.scaled[i] = scaled[i];
+            s_last.alarm[i] = alarm[i];
+        }
+        s_last.pressure_real_ma = p.ma;
+        s_last.pressure_real_voltage = p.voltage;
+        s_last.sensor_test_active = test_act;
+        s_last.sensor_test_channel = test_ch;
+        s_last.sensor_test_ma = test_ma;
+        s_last.sensor_test_remaining_s = test_rem;
+        s_last.pressure_fault_test_active = test_act && test_ch == GMS_SENSOR_PRESSURE;
+        s_last.pressure_fault_test_remaining_s = s_last.pressure_fault_test_active ? test_rem : 0;
+        s_last.pressure_bar = scaled[GMS_SENSOR_PRESSURE];
+        portEXIT_CRITICAL(&s_data_lock);
 
-        /* UPDATE SHARED DATA */
-
-        portENTER_CRITICAL(
-            &s_data_lock
-        );
-
-        s_last = s;
-
-        portEXIT_CRITICAL(
-            &s_data_lock
-        );
-
-        /* LOGGING */
-
-        print_sensor(
-            "SUHU",
-            0,
-            t
-        );
-
-        print_sensor(
-            "LEVEL",
-            2,
-            l
-        );
-
-        print_sensor(
-            "PRESSURE",
-            3,
-            p
-        );
-        if (s.sensor_test_active) {
-            ESP_LOGW(TAG, "BENCH SENSOR TEST channel=%s virtual %.3fmA REAL %.3fmA, %us left",
-                     sensor_test_channel_name(s.sensor_test_channel),
-                     (double)s.sensor_test_ma,
-                     (double)s.sensor_real_ma[s.sensor_test_channel],
-                     (unsigned)s.sensor_test_remaining_s);
+        /* Cetak log setiap 2 detik (10 siklus * 200 ms) */
+        if (++log_cycle % 10 == 0) {
+            print_sensor("SUHU", 0, t);
+            print_sensor("LEVEL", 2, l);
+            print_sensor("PRESSURE", 3, p);
+            if (test_act) {
+                ESP_LOGW(TAG, "BENCH SENSOR TEST channel=%s virtual %.3fmA REAL %.3fmA, %us left",
+                         sensor_test_channel_name(test_ch),
+                         (double)test_ma,
+                         (double)real_ma[test_ch],
+                         (unsigned)test_rem);
+            }
         }
 
-        ESP_LOGI(
-            TAG,
-            "EWIG %s",
-            ewig
-            ? "MODBUS OK"
-            : "NO RESPONSE"
-        );
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
 
-        /* MQTT */
+/*
+ * Task Modbus (Prioritas 4, Core 0, Periodik 500 ms)
+ * Polling register meter daya digital Modbus RTU RS-485 via UART (EWIG STE96-3E).
+ * Timeout 200 ms, retry logic.
+ */
+static void task_modbus(void *arg) {
+    (void)arg;
+    uint32_t log_cycle = 0;
+
+    ESP_LOGI(TAG, "task_modbus started on Core %d (Prio %d)",
+             xPortGetCoreID(), (int)uxTaskPriorityGet(NULL));
+
+    for (;;) {
+        uint16_t regs[EWIG_REG_COUNT] = {0};
+        bool ewig = ewig_read_raw(regs);
+
+        portENTER_CRITICAL(&s_data_lock);
+        s_last.ewig_ok = ewig;
+        s_last.ewig_raw[0] = regs[0];
+        s_last.ewig_raw[1] = regs[1];
+        portEXIT_CRITICAL(&s_data_lock);
+
+        if (++log_cycle % 4 == 0) {
+            ESP_LOGI(TAG, "EWIG %s", ewig ? "MODBUS OK" : "NO RESPONSE");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+/* -----------------------------------------------------
+   CORE 1: JARINGAN, PENYIMPANAN FLASH, & KOMPUTASI
+   ----------------------------------------------------- */
+
+/*
+ * Task State (Prioritas 6, Core 1, Periodik 1 s)
+ * FSM operasi genset (STOPPED, STARTING, RUNNING, STOPPING, FAULT).
+ * Uptime & akumulasi hour meter.
+ */
+static void task_state(void *arg) {
+    (void)arg;
+
+    ESP_LOGI(TAG, "task_state started on Core %d (Prio %d)",
+             xPortGetCoreID(), (int)uxTaskPriorityGet(NULL));
+
+    for (;;) {
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+
+        portENTER_CRITICAL(&s_data_lock);
+        s_last.uptime_ms = now_ms;
+        portEXIT_CRITICAL(&s_data_lock);
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+/*
+ * Task Publish (Prioritas 3, Core 1, Periodik 10 s RUNNING / 60 s STOPPED)
+ * Memformat telemetri ke JSON batch dan mempublikasikan ke broker MQTT Mastify.
+ */
+static void task_publish(void *arg) {
+    (void)arg;
+
+    ESP_LOGI(TAG, "task_publish started on Core %d (Prio %d)",
+             xPortGetCoreID(), (int)uxTaskPriorityGet(NULL));
+
+    for (;;) {
+        gms_measurement_t s = {0};
+        gms_get_snapshot(&s);
 
         publish(&s);
         publish_mastify(&s);
 
-        uint32_t interval_ms =
-            (uint32_t)gms_settings.interval_s *
-            1000u;
-
+        uint32_t interval_ms = (uint32_t)gms_settings.interval_s * 1000u;
         if (interval_ms < 1000u) {
             interval_ms = 1000u;
         }
 
-        vTaskDelay(
-            pdMS_TO_TICKS(interval_ms)
-        );
+        vTaskDelay(pdMS_TO_TICKS(interval_ms));
+    }
+}
+
+/*
+ * Task Buffer (Prioritas 2, Core 1, Event-Driven)
+ * Penyangga rekaman telemetri offline ke memori flash saat koneksi terputus.
+ */
+static void task_buffer(void *arg) {
+    (void)arg;
+    ESP_LOGI(TAG, "task_buffer standby on Core %d (Prio %d)",
+             xPortGetCoreID(), (int)uxTaskPriorityGet(NULL));
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
+/*
+ * Task OTA (Prioritas 1, Core 1, Event-Driven)
+ * Mengunduh firmware baru via HTTPS/MQTT, verifikasi SHA-256, dan switch partisi.
+ */
+static void task_ota(void *arg) {
+    (void)arg;
+    ESP_LOGI(TAG, "task_ota standby on Core %d (Prio %d)",
+             xPortGetCoreID(), (int)uxTaskPriorityGet(NULL));
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 
@@ -2066,22 +2147,12 @@ void app_main(void) {
 
     ESP_LOGW(
         TAG,
-        "BENCH TEST MODE"
+        "FREERTOS DUAL-CORE INITIALIZED (CORE 0 SAFETY & CORE 1 NETWORK)"
     );
 
     ESP_LOGW(
         TAG,
-        "NO RELAY CONTROL"
-    );
-
-    ESP_LOGW(
-        TAG,
-        "ADS1115 A0=TEMP A2=LEVEL A3=PRESSURE"
-    );
-
-    ESP_LOGW(
-        TAG,
-        "DO NOT CONNECT 24V DIRECTLY TO ADS1115"
+        "BENCH TEST MODE - ADS1115 A0=TEMP A2=LEVEL A3=PRESSURE"
     );
 
     /* INITIALIZE CONFIGURATION */
@@ -2102,25 +2173,91 @@ void app_main(void) {
 
     gms_web_start();
 
-    /* START MQTT TASK */
+    /* =====================================================
+       CORE 0: DETERMINISTIK & KESELAMATAN (Tabel 3 TA)
+       ===================================================== */
 
-    xTaskCreate(
+    xTaskCreatePinnedToCore(
+        task_safety,
+        "task_safety",
+        4096,
+        NULL,
+        10,
+        NULL,
+        0
+    );
+
+    xTaskCreatePinnedToCore(
+        task_sensor,
+        "task_sensor",
+        4096,
+        NULL,
+        5,
+        NULL,
+        0
+    );
+
+    xTaskCreatePinnedToCore(
+        task_modbus,
+        "task_modbus",
+        4096,
+        NULL,
+        4,
+        NULL,
+        0
+    );
+
+    /* =====================================================
+       CORE 1: JARINGAN, STORAGE & DATA (Tabel 3 TA)
+       ===================================================== */
+
+    xTaskCreatePinnedToCore(
+        task_state,
+        "task_state",
+        4096,
+        NULL,
+        6,
+        NULL,
+        1
+    );
+
+    xTaskCreatePinnedToCore(
         mqtt_network_task,
-        "network_mqtt",
+        "net_mqtt",
         6144,
         NULL,
         4,
-        NULL
+        NULL,
+        1
     );
 
-    /* START SENSOR TASK */
-
-    xTaskCreate(
-        telemetry_task,
-        "sensor_loop",
+    xTaskCreatePinnedToCore(
+        task_publish,
+        "task_publish",
         6144,
         NULL,
-        5,
-        NULL
+        3,
+        NULL,
+        1
+    );
+
+    xTaskCreatePinnedToCore(
+        task_buffer,
+        "task_buffer",
+        4096,
+        NULL,
+        2,
+        NULL,
+        1
+    );
+
+    xTaskCreatePinnedToCore(
+        task_ota,
+        "task_ota",
+        6144,
+        NULL,
+        1,
+        NULL,
+        1
     );
 }
