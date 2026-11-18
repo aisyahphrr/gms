@@ -70,6 +70,7 @@
 #include "lwip/ip4_addr.h"
 
 #include "gms.h"
+#include "gms_ota.h"
 
 /* =====================================================
    HARDWARE CONFIGURATION
@@ -2097,6 +2098,10 @@ static void task_publish(void *arg) {
         publish(&s);
         publish_mastify(&s);
 
+        /* Umpan balik status ke manajer swauji (Self-Test) OTA jika partisi baru aktif */
+        bool any_adc_ok = s.adc_ok[0] || s.adc_ok[1] || s.adc_ok[2];
+        gms_ota_self_test_feed(s_mqtt2_connected, any_adc_ok, s.ewig_ok);
+
         uint32_t interval_ms = (uint32_t)gms_settings.interval_s * 1000u;
         if (interval_ms < 1000u) {
             interval_ms = 1000u;
@@ -2113,20 +2118,6 @@ static void task_publish(void *arg) {
 static void task_buffer(void *arg) {
     (void)arg;
     ESP_LOGI(TAG, "task_buffer standby on Core %d (Prio %d)",
-             xPortGetCoreID(), (int)uxTaskPriorityGet(NULL));
-
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
-    }
-}
-
-/*
- * Task OTA (Prioritas 1, Core 1, Event-Driven)
- * Mengunduh firmware baru via HTTPS/MQTT, verifikasi SHA-256, dan switch partisi.
- */
-static void task_ota(void *arg) {
-    (void)arg;
-    ESP_LOGI(TAG, "task_ota standby on Core %d (Prio %d)",
              xPortGetCoreID(), (int)uxTaskPriorityGet(NULL));
 
     for (;;) {
@@ -2154,6 +2145,9 @@ void app_main(void) {
         TAG,
         "BENCH TEST MODE - ADS1115 A0=TEMP A2=LEVEL A3=PRESSURE"
     );
+
+    /* VERIFIKASI PARTISI & JENDELA SWAUJI (SELF-TEST) OTA */
+    gms_ota_self_test_check();
 
     /* INITIALIZE CONFIGURATION */
 
