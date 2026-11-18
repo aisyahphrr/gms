@@ -1,0 +1,120 @@
+:root{--bg:#f1f6fc;--ink:#102c4a;--muted:#687d94;--card:#fff;--line:#dce7f3;--brand:#2a6fae;--brand2:#174a83;--okay:#087e5a;--warn:#ba5a2b}*{box-sizing:border-box}body{margin:0;color:var(--ink);background:var(--bg);font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px}h1{font-size:29px;line-height:1.2;margin:6px 0 10px;letter-spacing:-.5px}h2{font-size:17px;margin:0 0 16px}p{line-height:1.55}.muted{color:var(--muted)}.eyebrow{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--brand);margin:0}.topbar{height:72px;background:#fff;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;padding:0 max(20px,calc((100vw - 1200px)/2))}.brand{display:flex;align-items:center;gap:12px}.brand strong{display:block;font-size:16px}.brand small{display:block;color:var(--muted);font-size:11px;margin-top:1px}.logo{display:grid;place-items:center;width:52px;height:52px;border-radius:14px;color:var(--brand);background:#e8f3fd;font-size:29px;font-weight:700}.logo.small{width:38px;height:38px;font-size:19px;border-radius:10px}.topbar nav{display:flex;align-items:center;gap:12px}.topbar nav a{padding:10px 12px;color:#7186a0;text-decoration:none;font-weight:700}.topbar nav a.active{color:var(--brand);border-bottom:2px solid var(--brand)}.wrap{max-width:1240px;padding:28px 20px 42px;margin:0 auto}.heading{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:25px}.heading .muted{margin:0}.pill,.tag{border-radius:30px;background:#e8f3fd;color:#256696;font-size:12px;font-weight:800;padding:9px 15px;white-space:nowrap}.tag{border-radius:8px;padding:6px 10px}.tag.warning{color:#965000;background:#fff1de}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}.metric,.panel{background:#fff;border:1px solid var(--line);border-radius:17px;box-shadow:0 7px 23px rgba(22,63,101,.035)}.metric{padding:22px 22px 18px}.metric-label{color:var(--muted);font-size:13px;font-weight:700}.metric strong{display:block;font-size:32px;margin:15px 0 8px;letter-spacing:-.6px}.metric-foot{font-size:12px;color:#6e879d}.columns{display:grid;grid-template-columns:1.5fr 1fr;gap:18px;margin-top:18px}.panel{padding:24px}.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.panel-head h2{margin-bottom:4px}.panel-head p{margin-top:0}.space{margin-top:18px}.kv{display:flex;justify-content:space-between;gap:15px;border-bottom:1px solid #edf2f7;padding:12px 0}.kv>span{color:var(--muted)}.kv strong{text-align:right;font-size:13px}.legend{display:flex;gap:15px;font-size:11px;color:var(--muted)}.legend span:nth-child(1){color:#346db0}.legend span:nth-child(2){color:#2a9774}.legend span:nth-child(3){color:#b87439}canvas{width:100%;height:240px;display:block}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:12px 14px;border-bottom:1px solid #e8eef4;text-align:left;white-space:nowrap}th{font-size:11px;color:#637b95;text-transform:uppercase;letter-spacing:.5px;background:#f7faff}td.good{color:#087e5a;font-weight:700}td.bad{color:#b85b2a;font-weight:700}.info,.alert{color:#4a6885;background:#eef5fc;border:1px solid #d7e8f7;border-radius:10px;padding:13px 15px}.alert{margin-bottom:18px}.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.settings-grid .panel{padding:28px}form label{display:block;font-size:12px;font-weight:750;margin-top:16px;color:#2b527a}input,select{display:block;width:100%;height:43px;border-radius:8px;border:1px solid #cfdfee;background:#fff;padding:0 12px;font:inherit;font-size:14px;margin-top:7px;outline:none;color:var(--ink)}input:focus,select:focus{border-color:var(--brand);box-shadow:0 0 0 3px #dceefa}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}.button{border:none;cursor:pointer;font:inherit;font-weight:800;font-size:13px;border-radius:8px;min-height:41px;padding:0 17px;transition:background .15s}.button.primary{background:var(--brand);color:white;margin-top:19px}.button.primary:hover{background:var(--brand2)}.button.outline{background:white;border:1px solid #bad4e9;color:var(--brand);margin-top:18px}.button.text{color:var(--muted);background:transparent}.button.wide{display:block;text-align:center;text-decoration:none;padding:12px}.field-help{margin-top:15px;color:var(--muted);font-size:12px;line-height:1.6}code{font-size:11px;background:#f0f3f8;padding:3px 5px;border-radius:4px}.message{min-height:18px;color:var(--brand);font-size:12px;font-weight:700}.footer{text-align:center;font-size:11px;color:#8195a8;padding:0 20px 25px}.login-body{min-height:100vh;display:flex;justify-content:center;align-items:center;padding:24px;background:radial-gradient(circle at 12% 12%,#e8f1ff 0,transparent 35%),linear-gradient(145deg,#f8fbff,#e6f0fa)}.login-card{background:#fff;width:min(100%,455px);padding:38px;border:1px solid #e0eafa;border-radius:18px;box-shadow:0 28px 75px rgba(27,69,108,.10)}.login-card .eyebrow{margin-top:24px}.login-card h1{margin-top:7px}.login-card .button{width:100%}.login-hint{margin-top:25px;padding-top:17px;border-top:1px solid var(--line);font-size:12px;color:#6983a0;line-height:1.65}.login-footer{position:fixed;bottom:12px;font-size:11px;color:#8196ac}@media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.columns,.settings-grid{grid-template-columns:1fr}}@media(max-width:540px){.topbar{height:auto;padding:14px;align-items:flex-start;gap:15px;flex-direction:column}.topbar nav{gap:3px}.topbar nav a{padding:8px 10px}.wrap{padding:20px 12px}.heading{align-items:flex-start}.heading h1{font-size:23px}.metrics{gap:9px}.metric{padding:15px}.metric strong{font-size:24px}.metric-label{font-size:12px}.metric-foot{font-size:11px}.panel{padding:16px}.two-col{grid-template-columns:1fr}.login-card{padding:26px}.login-footer{display:none}}
+
+/* Perbaikan 1/2: Alur Wi-Fi -> hasil IP; tidak mengubah gaya halaman lain. */
+#manual-ip-fields[hidden],#wifi-result[hidden]{display:none}
+.wifi-result{margin-top:20px;padding:19px;border:1px solid #bcded3;border-radius:12px;background:#f4fcf9}
+.wifi-result-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:14px}
+.wifi-demo-tag{font-size:10px;letter-spacing:.6px;font-weight:800;color:#896318;background:#fff2d9;border-radius:7px;padding:5px 9px}
+.wifi-result-status{color:#177659;font-weight:750;font-size:12px;margin:10px 0 15px}
+.wifi-result-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 10px}
+.wifi-result-grid div{min-width:0}
+.wifi-result-grid span{display:block;color:#67849a;font-size:11px;margin-bottom:3px}
+.wifi-result-grid strong{display:block;font-size:13px;overflow-wrap:anywhere}
+.wifi-result-link{display:inline-flex;align-items:center;text-decoration:none;margin-top:17px;padding:10px 15px}
+.wifi-result-foot{color:#6b8298;font-size:11px;line-height:1.5;margin:11px 0 0}
+@media(max-width:540px){.wifi-result-grid{grid-template-columns:1fr}}
+/* ================================================
+   SENSOR THRESHOLD INDICATORS
+   ================================================ */
+
+.sensor-alarm {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: #edf2f7;
+  color: #64748b;
+}
+
+.sensor-alarm.normal {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.sensor-alarm.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.sensor-alarm.critical {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.sensor-alarm.error {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.sensor-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+}
+
+.sensor-status-card {
+  padding: 18px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.sensor-status-card span,
+.sensor-status-card small {
+  display: block;
+}
+
+.sensor-status-card span {
+  font-size: 13px;
+  color: #64748b;
+  margin-bottom: 10px;
+}
+
+.sensor-status-card strong {
+  display: block;
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+
+.sensor-status-card small {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.sensor-status-card .normal,
+td.normal {
+  color: #15803d;
+}
+
+.sensor-status-card .warning,
+td.warning {
+  color: #b45309;
+}
+
+.sensor-status-card .critical,
+td.critical {
+  color: #b91c1c;
+}
+
+.sensor-status-card .error,
+td.error {
+  color: #64748b;
+}
+
+@media (max-width: 768px) {
+  .sensor-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+/* Genset extra telemetry cards — UI staging only */
+.genset-group-title { margin: 24px 0 12px; font-size: 15px; color: #334155; }
+.genset-extra-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.genset-extra-card { border: 1px solid #dbe5f0; background: #f8fafc; border-radius: 12px; padding: 16px; min-width: 0; }
+.genset-extra-card > span { display: block; font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 12px; }
+.genset-extra-card > strong { display: block; font-size: 24px; color: #0f2745; overflow-wrap: anywhere; }
+.genset-extra-card em { font-size: 13px; font-style: normal; font-weight: 500; color: #64748b; }
+.genset-extra-card small { display: block; font-size: 11px; color: #64748b; line-height: 1.5; margin-top: 9px; }

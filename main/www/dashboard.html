@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Hardware Monitoring | GMS Internal</title>
+
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+
+<body data-page="dashboard">
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo small">▣</span>
+    <div>
+      <strong>GMS Internal</strong>
+      <small>Embedded Device Console</small>
+    </div>
+  </div>
+
+  <nav>
+    <a class="active" href="/dashboard">Monitoring</a>
+    <a href="/settings">Konfigurasi</a>
+    <button class="button text" id="logout">Keluar</button>
+  </nav>
+</header>
+
+<main class="wrap">
+
+  <!-- HEADER -->
+
+  <div class="heading">
+    <div>
+      <p class="eyebrow">HARDWARE MONITORING</p>
+      <h1>Ringkasan Perangkat</h1>
+
+      <p class="muted">
+        Data lokal langsung dari ESP32-S3 •
+        Pembaruan ±2 detik
+      </p>
+    </div>
+
+    <div class="pill" id="device-status">
+      Menghubungkan…
+    </div>
+  </div>
+
+  <!-- ================================================= -->
+  <!-- SENSOR METRICS -->
+  <!-- ================================================= -->
+
+  <div class="metrics">
+
+    <!-- TEMPERATURE -->
+
+    <article class="metric">
+      <div class="metric-label">
+        Temperature • A0
+      </div>
+
+      <strong id="temp-val">—</strong>
+
+      <div class="metric-foot" id="temp-qual">
+        Menunggu data
+      </div>
+
+      <div class="sensor-alarm" id="temp-alarm">
+        MENUNGGU
+      </div>
+    </article>
+
+    <!-- PRESSURE -->
+
+    <article class="metric">
+      <div class="metric-label">
+        Pressure • A3
+      </div>
+
+      <strong id="pressure-val">—</strong>
+
+      <div class="metric-foot" id="pressure-qual">
+        Menunggu data
+      </div>
+
+      <div class="sensor-alarm" id="pressure-alarm">
+        MENUNGGU
+      </div>
+    </article>
+
+    <!-- LEVEL -->
+
+    <article class="metric">
+      <div class="metric-label">
+        Level Tangki • A2
+      </div>
+
+      <strong id="level-val">—</strong>
+
+      <div class="metric-foot" id="level-qual">
+        Menunggu data
+      </div>
+
+      <div class="sensor-alarm" id="level-alarm">
+        MENUNGGU
+      </div>
+    </article>
+
+    <!-- EWIG -->
+
+    <article class="metric">
+      <div class="metric-label">
+        EWIG • Modbus RS485
+      </div>
+
+      <strong id="ewig-val">—</strong>
+
+      <div class="metric-foot">
+        Register R09/R10 belum dipetakan ke V/A/W.
+        Status hanya menunjukkan komunikasi.
+      </div>
+    </article>
+
+  </div>
+
+
+  <!-- PARAMETER GENSET TAMBAHAN: TAHAP TAMPILAN, BELUM TERHUBUNG SENSOR -->
+  <section class="panel space" id="genset-monitoring">
+    <div class="panel-head"><div>
+      <h2>Monitoring Parameter Genset</h2>
+      <p class="muted">Struktur parameter untuk integrasi berikutnya. Tanda — berarti sumber data belum terverifikasi, bukan nilai nol.</p>
+    </div><span class="tag warning">PERSIAPAN INTEGRASI</span></div>
+
+    <div style="border:1px solid #e0ab4f;border-radius:12px;padding:14px;margin:14px 0;background:#fff8e9">
+      <strong>SIMULASI BENCH — BUKAN DATA GENSET AKTUAL</strong>
+      <p id="sim-status" style="margin:8px 0">Mode nonaktif; hour meter simulasi tersimpan terpisah di NVS.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <button class="sim-btn" data-sim-state="STOPPED">Aktifkan STOPPED</button>
+        <button class="sim-btn" data-sim-state="STARTING">STARTING</button>
+        <button class="sim-btn" data-sim-state="RUNNING">RUNNING</button>
+        <button class="sim-btn" data-sim-state="STOPPING">STOPPING</button>
+        <button class="sim-btn" data-sim-state="FAULT">FAULT</button>
+        <button class="sim-btn" data-sim-state="DISABLE">Matikan Simulasi</button>
+      </div>
+      <small>Urutan normal: STOPPED → STARTING → RUNNING → STOPPING → STOPPED. Tidak memengaruhi relay, sensor, atau MQTT.</small>
+    </div>
+    <h3 class="genset-group-title">Operasional Mesin</h3>
+    <p id="genset-source-label" style="padding:8px 12px;font-weight:700;border:1px dashed currentColor;border-radius:8px">PARAMETER GENSET BELUM TERSEDIA — SENSOR FISIK TETAP REAL</p>
+    <div class="genset-extra-grid">
+      <div class="genset-extra-card"><span>Status mesin</span><strong id="extra-engine-state">—</strong><small>Memerlukan validasi state mesin</small></div>
+      <div class="genset-extra-card"><span>Putaran mesin</span><strong id="extra-rpm">— <em>RPM</em></strong><small>Sensor RPM atau estimasi tervalidasi</small></div>
+      <div class="genset-extra-card"><span>Tegangan aki</span><strong id="extra-battery">— <em>V</em></strong><small>Input pengukuran DC belum tersedia</small></div>
+      <div class="genset-extra-card"><span>Frekuensi</span><strong id="extra-frequency">— <em>Hz</em></strong><small>Menunggu data EWIG tervalidasi</small></div>
+      <div class="genset-extra-card"><span>Beban genset</span><strong id="extra-load">— <em>%</em></strong><small>Perlu daya aktual dan rating genset</small></div>
+    </div>
+
+    <h3 class="genset-group-title">Kelistrikan 3 Fasa — EWIG</h3>
+    <div class="genset-extra-grid">
+      <div class="genset-extra-card"><span>Tegangan L1–N</span><strong id="extra-v-l1">— <em>V</em></strong></div>
+      <div class="genset-extra-card"><span>Tegangan L2–N</span><strong id="extra-v-l2">— <em>V</em></strong></div>
+      <div class="genset-extra-card"><span>Tegangan L3–N</span><strong id="extra-v-l3">— <em>V</em></strong></div>
+      <div class="genset-extra-card"><span>Arus L1</span><strong id="extra-i-l1">— <em>A</em></strong></div>
+      <div class="genset-extra-card"><span>Arus L2</span><strong id="extra-i-l2">— <em>A</em></strong></div>
+      <div class="genset-extra-card"><span>Arus L3</span><strong id="extra-i-l3">— <em>A</em></strong></div>
+      <div class="genset-extra-card"><span>Daya aktif</span><strong id="extra-p-kw">— <em>kW</em></strong></div>
+      <div class="genset-extra-card"><span>Daya semu</span><strong id="extra-s-kva">— <em>kVA</em></strong></div>
+      <div class="genset-extra-card"><span>Power factor</span><strong id="extra-pf">—</strong></div>
+    </div>
+
+    <h3 class="genset-group-title">Hour Meter, Maintenance &amp; BBM</h3>
+    <div class="genset-extra-grid">
+      <div class="genset-extra-card"><span>Hour meter</span><strong id="extra-run-hours">— <em>jam</em></strong><small>Penghitungan hanya saat RUNNING simulasi</small></div>
+      <div class="genset-extra-card"><span>Sisa waktu menuju servis</span><strong id="extra-maint-due">— <em>jam</em></strong><small>Interval uji simulasi: 250 jam</small></div>
+      <div class="genset-extra-card"><span>Status servis</span><strong id="extra-service">—</strong><small>Status berdasarkan jam simulasi</small></div>
+      <div class="genset-extra-card"><span>Estimasi konsumsi BBM</span><strong id="extra-fuel-est">— <em>L</em></strong><small>Menunggu model konsumsi tervalidasi</small></div>
+    </div>
+    <p class="info">Tahap ini hanya menambahkan tampilan. Belum ada pembacaan sensor, penghitungan, perubahan /api/status, atau pengiriman key MQTT baru. Nilai tidak boleh dianggap terukur sampai sumber datanya tersedia dan tervalidasi.</p>
+  </section>
+
+  <!-- ================================================= -->
+  <!-- SENSOR ALARM SUMMARY -->
+  <!-- ================================================= -->
+
+  <section class="panel space">
+
+    <div class="panel-head">
+      <div>
+        <h2>Status Ambang Batas Sensor</h2>
+
+        <p class="muted">
+          Evaluasi otomatis berdasarkan konfigurasi
+          threshold yang tersimpan pada ESP32-S3.
+        </p>
+      </div>
+
+      <span class="tag">LIVE</span>
+    </div>
+
+    <div class="sensor-status-grid">
+
+      <div class="sensor-status-card">
+        <span>Temperature A0</span>
+        <strong id="temp-status-summary">
+          MENUNGGU
+        </strong>
+        <small id="temp-status-detail">
+          Belum ada pembacaan.
+        </small>
+      </div>
+
+      <div class="sensor-status-card">
+        <span>Level A2</span>
+        <strong id="level-status-summary">
+          MENUNGGU
+        </strong>
+        <small id="level-status-detail">
+          Belum ada pembacaan.
+        </small>
+      </div>
+
+      <div class="sensor-status-card">
+        <span>Pressure A3</span>
+        <strong id="pressure-status-summary">
+          MENUNGGU
+        </strong>
+        <small id="pressure-status-detail">
+          Belum ada pembacaan.
+        </small>
+      </div>
+
+    </div>
+
+    <p class="info">
+      Status NORMAL, WARNING, dan CRITICAL ditentukan
+      berdasarkan batas yang diatur pengguna.
+      SENSOR_ERROR dan OUT_OF_RANGE menunjukkan
+      pembacaan yang tidak dapat digunakan sebagai
+      nilai pengukuran normal.
+      Indikator ini hanya untuk monitoring,
+      bukan kontrol proteksi mesin.
+    </p>
+
+    <a class="button outline" href="/settings">
+      Atur Kalibrasi &amp; Threshold →
+    </a>
+
+  </section>
+
+  <!-- ================================================= -->
+  <!-- TREND AND NETWORK -->
+  <!-- ================================================= -->
+
+  <div class="columns">
+
+    <section class="panel">
+
+      <div class="panel-head">
+        <div>
+          <h2>Tren Pembacaan Sensor</h2>
+          <p class="muted">
+            Riwayat lokal browser ini
+            (bukan histori ThingsBoard).
+          </p>
+        </div>
+
+        <span class="tag">LIVE</span>
+      </div>
+
+      <canvas
+        id="trend"
+        height="240"
+        role="img"
+        aria-label="Grafik arus transmitter tiga sensor"
+      ></canvas>
+
+      <div class="legend">
+        <span>■ Suhu (mA)</span>
+        <span>■ Level (mA)</span>
+        <span>■ Tekanan (mA)</span>
+      </div>
+
+    </section>
+
+    <section class="panel">
+
+      <h2>Status Konektivitas</h2>
+
+      <div class="kv">
+        <span>Wi-Fi Station</span>
+        <strong id="wifi-state">—</strong>
+      </div>
+
+      <div class="kv">
+        <span>IP Wi-Fi (STA)</span>
+        <strong id="sta-ip">—</strong>
+      </div>
+
+      <div class="kv">
+        <span>MQTT / TLS</span>
+        <strong id="mqtt-state">—</strong>
+      </div>
+
+      <div class="kv">
+        <span>IP Lokal (AP)</span>
+        <strong>192.168.4.1</strong>
+      </div>
+
+      <div class="kv">
+        <span>Access Point</span>
+        <strong id="ap-ssid">—</strong>
+      </div>
+
+      <a
+        class="button outline wide"
+        href="/settings"
+      >
+        Buka Pengaturan Perangkat →
+      </a>
+
+    </section>
+
+  </div>
+
+  <!-- ================================================= -->
+  <!-- SENSOR DIAGNOSTICS -->
+  <!-- ================================================= -->
+
+  <section class="panel space">
+
+    <div class="panel-head">
+      <div>
+        <h2>Diagnostik Sensor dan Meter</h2>
+
+        <p class="muted">
+          Pembacaan ADC, arus transmitter, nilai hasil
+          scaling, dan kondisi sensor.
+        </p>
+      </div>
+
+      <span class="tag warning">
+        BENCH MODE
+      </span>
+    </div>
+
+    <div class="table-wrap">
+
+      <table>
+
+        <thead>
+          <tr>
+            <th>Perangkat</th>
+            <th>ADC / Komunikasi</th>
+            <th>Arus</th>
+            <th>Tegangan</th>
+            <th>RAW</th>
+            <th>Nilai Fisik</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+
+        <tbody id="sensor-table">
+          <tr>
+            <td colspan="7">
+              Menunggu pembacaan…
+            </td>
+          </tr>
+        </tbody>
+
+      </table>
+
+    </div>
+
+    <p class="info">
+      Konversi °C, %, dan bar menggunakan parameter
+      scaling yang diatur melalui dashboard.
+      Nilai tersebut belum dinyatakan sebagai hasil
+      kalibrasi metrologis menggunakan alat referensi.
+      EWIG hanya diverifikasi komunikasinya;
+      pengukuran listrik belum tervalidasi.
+    </p>
+
+  </section>
+
+</main>
+
+<footer class="footer">
+  GMS-001 • ESP-IDF 6.0.x •
+  Monitoring lokal •
+  Tanpa kontrol relay.
+</footer>
+
+</body>
+</html>

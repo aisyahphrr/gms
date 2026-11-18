@@ -1,0 +1,336 @@
+#include "gms.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <inttypes.h>
+#include "esp_log.h"
+#include "esp_random.h"
+#include "esp_timer.h"
+#include "esp_http_server.h"
+#include "lwip/ip4_addr.h"
+
+static const char *TAG="GMS_WEB";
+static httpd_handle_t s_server=NULL;
+#define SESSION_SECONDS 1800
+#define MAX_BODY 1100
+
+typedef struct{char sid[33],csrf[33];int64_t until;} admin_session_t;
+static admin_session_t s_session={0};
+static unsigned s_fail_count=0;
+static int64_t s_fail_until=0;
+
+/* Files are embedded by ESP-IDF EMBED_TXTFILES in main/CMakeLists.txt */
+extern const char login_html[] asm("_binary_www_login_html_start");
+extern const char dashboard_html[] asm("_binary_www_dashboard_html_start");
+extern const char settings_html[] asm("_binary_www_settings_html_start");
+extern const char style_css[] asm("_binary_www_style_css_start");
+extern const char app_js[] asm("_binary_www_app_js_start");
+
+static int64_t now_sec(void){return esp_timer_get_time()/1000000;}
+static void token_hex(char out[33]){
+    uint8_t raw[16];esp_fill_random(raw,sizeof(raw));
+    const char *hex="0123456789abcdef";
+    for(int i=0;i<16;i++){out[i*2]=hex[raw[i]>>4];out[i*2+1]=hex[raw[i]&15];}
+    out[32]=0;
+}
+static bool constant_text_equal(const char *a,const char *b){
+    if(strlen(a)!=strlen(b))return false;
+    unsigned diff=0;
+    for(size_t i=0;i<strlen(a);i++)diff|=(unsigned char)a[i]^(unsigned char)b[i];
+    return diff==0;
+}
+static void secure_headers(httpd_req_t *req){
+    httpd_resp_set_hdr(req,"Cache-Control","no-store, max-age=0");
+    httpd_resp_set_hdr(req,"X-Content-Type-Options","nosniff");
+    httpd_resp_set_hdr(req,"X-Frame-Options","DENY");
+    httpd_resp_set_hdr(req,"Referrer-Policy","no-referrer");
+    httpd_resp_set_hdr(req,"Content-Security-Policy","default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'");
+}
+static esp_err_t respond_json(httpd_req_t *req,int code,const char *json){
+    secure_headers(req);httpd_resp_set_type(req,"application/json; charset=utf-8");
+    if(code==400)httpd_resp_set_status(req,"400 Bad Request");
+    else if(code==401)httpd_resp_set_status(req,"401 Unauthorized");
+    else if(code==403)httpd_resp_set_status(req,"403 Forbidden");
+    else if(code==429)httpd_resp_set_status(req,"429 Too Many Requests");
+    else if(code==500)httpd_resp_set_status(req,"500 Internal Server Error");
+    return httpd_resp_sendstr(req,json);
+}
+static bool authorized(httpd_req_t *req){
+    if(!s_session.sid[0]||now_sec()>s_session.until)return false;
+    char cookie[200]={0};
+    if(httpd_req_get_hdr_value_str(req,"Cookie",cookie,sizeof(cookie))!=ESP_OK)return false;
+    const char *v=strstr(cookie,"gms_sid=");
+    if(!v)return false;
+    v+=8;
+    char sid[33]={0};size_t i=0;
+    while(i<32 && v[i] && v[i]!=';' && v[i]!=' '){sid[i]=v[i];i++;}
+    if(!constant_text_equal(sid,s_session.sid))return false;
+    s_session.until=now_sec()+SESSION_SECONDS;
+    return true;
+}
+static bool csrf_ok(httpd_req_t *req){
+    if(!authorized(req))return false;
+    char csrf[64]={0};
+    if(httpd_req_get_hdr_value_str(req,"X-GMS-CSRF",csrf,sizeof(csrf))!=ESP_OK)return false;
+    return constant_text_equal(csrf,s_session.csrf);
+}
+static esp_err_t require_page(httpd_req_t *req,const char *content){
+    if(!authorized(req)){
+        secure_headers(req);httpd_resp_set_status(req,"302 Found");
+        httpd_resp_set_hdr(req,"Location","/login");return httpd_resp_sendstr(req,"");
+    }
+    secure_headers(req);httpd_resp_set_type(req,"text/html; charset=utf-8");
+    return httpd_resp_sendstr(req,content);
+}
+static esp_err_t page_login(httpd_req_t *req){
+    if(authorized(req)){
+        secure_headers(req);httpd_resp_set_status(req,"302 Found");
+        httpd_resp_set_hdr(req,"Location","/dashboard");return httpd_resp_sendstr(req,"");
+    }
+    secure_headers(req);httpd_resp_set_type(req,"text/html; charset=utf-8");
+    return httpd_resp_sendstr(req,login_html);
+}
+static esp_err_t page_dash(httpd_req_t *req){return require_page(req,dashboard_html);}
+static esp_err_t page_settings(httpd_req_t *req){return require_page(req,settings_html);}
+static esp_err_t get_css(httpd_req_t *req){
+    secure_headers(req);httpd_resp_set_type(req,"text/css; charset=utf-8");return httpd_resp_sendstr(req,style_css);
+}
+static esp_err_t get_js(httpd_req_t *req){
+    secure_headers(req);httpd_resp_set_type(req,"application/javascript; charset=utf-8");return httpd_resp_sendstr(req,app_js);
+}
+static esp_err_t request_body(httpd_req_t *req,char *dest,size_t capacity){
+    if(req->content_len<=0 || req->content_len>=capacity || req->content_len>MAX_BODY)return ESP_ERR_INVALID_SIZE;
+    int got=0;int want=req->content_len;
+    while(got<want){int r=httpd_req_recv(req,dest+got,want-got);
+        if(r<=0)return ESP_FAIL;got+=r;
+    }
+    dest[want]=0;return ESP_OK;
+}
+static int dec_hex(char ch){
+    if(ch>='0'&&ch<='9')return ch-'0';
+    if(ch>='a'&&ch<='f')return ch-'a'+10;
+    if(ch>='A'&&ch<='F')return ch-'A'+10;
+    return -1;
+}
+static bool decode_form(const char *src,size_t length,char *out,size_t cap){
+    size_t j=0;
+    for(size_t i=0;i<length;i++){
+        unsigned char c=(unsigned char)src[i];
+        if(c=='+')c=' ';
+        else if(c=='%'){
+            if(i+2>=length)return false;
+            int x=dec_hex(src[i+1]),y=dec_hex(src[i+2]);
+            if(x<0||y<0)return false;
+            c=(unsigned char)((x<<4)|y);i+=2;
+        }
+        if(c==0||c<0x20||c==0x7f||j+1>=cap)return false;
+        out[j++]=(char)c;
+    }
+    out[j]=0;return true;
+}
+static bool form_read(const char *body,const char *name,char *dest,size_t capacity){
+    size_t keylen=strlen(name);
+    const char *p=body;
+    while(*p){
+        const char *end=strchr(p,'&');if(!end)end=p+strlen(p);
+        const char *eq=memchr(p,'=',(size_t)(end-p));
+        if(eq && (size_t)(eq-p)==keylen && memcmp(p,name,keylen)==0){
+            return decode_form(eq+1,(size_t)(end-eq-1),dest,capacity);
+        }
+        p=(*end=='&')?end+1:end;
+    }
+    return false;
+}
+static bool check_string(const char *s,size_t maxlen,bool allow_empty){
+    size_t n=strlen(s);
+    if(n>maxlen||(!allow_empty && n==0))return false;
+    for(size_t i=0;i<n;i++)if((unsigned char)s[i]<32||(unsigned char)s[i]>126)return false;
+    return true;
+}
+static bool hostname_ok(const char *s){
+    size_t n=strlen(s);if(n==0||n>96)return false;
+    for(size_t i=0;i<n;i++){
+        char c=s[i];
+        if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='.'||c=='-'))return false;
+    }
+    return true;
+}
+static bool ip_ok(const char *s){ip4_addr_t ip;return s[0]&&ip4addr_aton(s,&ip);}
+static bool is_all_digits(const char *s){if(!*s)return false;for(;*s;s++)if(!isdigit((unsigned char)*s))return false;return true;}
+static void json_string(const char *in,char *out,size_t cap){
+    size_t j=0;
+    if(cap<3)return;out[j++]='"';
+    for(size_t i=0;in[i] && j+7<cap;i++){
+        unsigned char c=(unsigned char)in[i];
+        if(c=='"'||c=='\\'){out[j++]='\\';out[j++]=(char)c;}
+        else if(c>=32&&c<127)out[j++]=(char)c;
+        else{out[j++]='?';}
+    }
+    out[j++]='"';out[j]=0;
+}
+static esp_err_t post_login(httpd_req_t *req){
+    if(now_sec()<s_fail_until)return respond_json(req,429,"{\"error\":\"Terlalu banyak percobaan login; coba lagi nanti\"}");
+    char body[MAX_BODY+1]={0},user[60]={0},pw[130]={0};
+    if(request_body(req,body,sizeof(body))!=ESP_OK ||
+       !form_read(body,"username",user,sizeof(user))||
+       !form_read(body,"password",pw,sizeof(pw))){
+        return respond_json(req,400,"{\"error\":\"Form login tidak valid\"}");
+    }
+    if(strcmp(user,"admin")!=0 || !gms_store_verify_admin(pw)){
+        s_fail_count++;if(s_fail_count>=5){s_fail_count=0;s_fail_until=now_sec()+60;}
+        memset(pw,0,sizeof(pw));return respond_json(req,401,"{\"error\":\"Username atau password salah\"}");
+    }
+    memset(pw,0,sizeof(pw));s_fail_count=0;s_fail_until=0;
+    token_hex(s_session.sid);token_hex(s_session.csrf);s_session.until=now_sec()+SESSION_SECONDS;
+    char cookie[160];snprintf(cookie,sizeof(cookie),"gms_sid=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=%d",s_session.sid,SESSION_SECONDS);
+    secure_headers(req);httpd_resp_set_hdr(req,"Set-Cookie",cookie);
+    httpd_resp_set_type(req,"application/json");return httpd_resp_sendstr(req,"{\"ok\":true}");
+}
+static esp_err_t post_logout(httpd_req_t *req){
+    if(!csrf_ok(req))return respond_json(req,403,"{\"error\":\"Sesi/CSRF tidak valid\"}");
+    memset(&s_session,0,sizeof(s_session));
+    secure_headers(req);
+    httpd_resp_set_hdr(req,"Set-Cookie","gms_sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+    httpd_resp_set_type(req,"application/json");return httpd_resp_sendstr(req,"{\"ok\":true}");
+}
+static esp_err_t get_status(httpd_req_t *req){
+    if(!authorized(req))return respond_json(req,401,"{\"error\":\"Login diperlukan\"}");
+    gms_measurement_t s;gms_get_snapshot(&s);
+    char ip[16],ap[40];gms_get_station_ip(ip);gms_get_ap_ssid(ap);
+    char payload[1536],pjson[12],ljson[12],tjson[12];
+    if(s.loop_ok[2])snprintf(pjson,sizeof(pjson),"%.3f",s.pressure_bar);else strcpy(pjson,"null");
+    if(s.loop_ok[1])snprintf(ljson,sizeof(ljson),"%.2f",(s.ma[1]-4.0f)*6.25f);else strcpy(ljson,"null");
+    if(s.loop_ok[0])snprintf(tjson,sizeof(tjson),"%.3f",s.ma[0]);else strcpy(tjson,"null");
+    char ipjs[45],apjs[95];json_string(ip,ipjs,sizeof(ipjs));json_string(ap,apjs,sizeof(apjs));
+    snprintf(payload,sizeof(payload),
+        "{\"csrf\":\"%s\",\"device\":\"GMS-001\",\"bench_mode\":true,"
+        "\"sta_online\":%s,\"mqtt_connected\":%s,\"sta_ip\":%s,\"ap_ip\":\"192.168.4.1\",\"ap_ssid\":%s,"
+        "\"uptime_ms\":%" PRIu32 ",\"temp\":{\"voltage\":%.4f,\"ma\":%s,\"raw\":%d,\"adc_ok\":%s,\"loop_ok\":%s},"
+        "\"level\":{\"voltage\":%.4f,\"ma\":%.3f,\"percent\":%s,\"raw\":%d,\"adc_ok\":%s,\"loop_ok\":%s},"
+        "\"pressure\":{\"voltage\":%.4f,\"ma\":%.3f,\"bar\":%s,\"calibrated\":false,\"raw\":%d,\"adc_ok\":%s,\"loop_ok\":%s},"
+        "\"ewig\":{\"modbus_ok\":%s,\"measurement_valid\":false,\"raw_r09\":%u,\"raw_r10\":%u}}",
+        s_session.csrf,gms_wifi_online()?"true":"false",gms_mqtt_online()?"true":"false",ipjs,apjs,s.uptime_ms,
+        s.volts[0],tjson,s.raw[0],s.adc_ok[0]?"true":"false",s.loop_ok[0]?"true":"false",
+        s.volts[1],s.ma[1],ljson,s.raw[1],s.adc_ok[1]?"true":"false",s.loop_ok[1]?"true":"false",
+        s.volts[2],s.ma[2],pjson,s.raw[2],s.adc_ok[2]?"true":"false",s.loop_ok[2]?"true":"false",
+        s.ewig_ok?"true":"false",s.ewig_raw[0],s.ewig_raw[1]);
+    return respond_json(req,200,payload);
+}
+static esp_err_t get_config(httpd_req_t *req){
+    if(!authorized(req))return respond_json(req,401,"{\"error\":\"Login diperlukan\"}");
+    char ssid[100],ip[50],gateway[50],mask[50],dns[50],host[210];
+    json_string(gms_settings.ssid,ssid,sizeof(ssid));
+    json_string(gms_settings.ip,ip,sizeof(ip));
+    json_string(gms_settings.gateway,gateway,sizeof(gateway));
+    json_string(gms_settings.mask,mask,sizeof(mask));
+    json_string(gms_settings.dns,dns,sizeof(dns));
+    json_string(gms_settings.mqtt_host,host,sizeof(host));
+    char payload[700];
+    snprintf(payload,sizeof(payload),
+      "{\"csrf\":\"%s\",\"ssid\":%s,\"wifi_password_saved\":%s,"
+      "\"static_ip\":%s,\"ip\":%s,\"gateway\":%s,\"mask\":%s,\"dns\":%s,"
+      "\"mqtt_host\":%s,\"mqtt_port\":%u,\"mqtt_token_saved\":%s,\"interval_s\":%u}",
+      s_session.csrf,ssid,gms_settings.wifi_password[0]?"true":"false",
+      gms_settings.static_ip?"true":"false",ip,gateway,mask,dns,host,
+      (unsigned)gms_settings.mqtt_port,gms_settings.mqtt_token[0]?"true":"false",
+      (unsigned)gms_settings.interval_s);
+    return respond_json(req,200,payload);
+}
+static esp_err_t save_wifi(httpd_req_t *req){
+    if(!csrf_ok(req))return respond_json(req,403,"{\"error\":\"Sesi/CSRF tidak valid\"}");
+    char body[MAX_BODY+1];
+    if(request_body(req,body,sizeof(body))!=ESP_OK)return respond_json(req,400,"{\"error\":\"Form terlalu besar atau tidak valid\"}");
+    gms_settings_t next=gms_settings;
+    char mode[8],pw[65];
+    if(!form_read(body,"ssid",next.ssid,sizeof(next.ssid))||
+       !form_read(body,"mode",mode,sizeof(mode))||
+       !form_read(body,"wifi_password",pw,sizeof(pw))){
+        return respond_json(req,400,"{\"error\":\"Input SSID/IP belum lengkap\"}");
+    }
+    if(!check_string(next.ssid,32,true))return respond_json(req,400,"{\"error\":\"SSID tidak valid\"}");
+    if(pw[0]){
+        if(strlen(pw)<8||strlen(pw)>63)return respond_json(req,400,"{\"error\":\"Password Wi-Fi minimal 8 karakter\"}");
+        strcpy(next.wifi_password,pw);
+    }
+    next.static_ip=strcmp(mode,"static")==0;
+    if(strcmp(mode,"dhcp")!=0 && !next.static_ip)return respond_json(req,400,"{\"error\":\"Mode IP tidak dikenal\"}");
+    if(!form_read(body,"ip",next.ip,sizeof(next.ip))||
+       !form_read(body,"gateway",next.gateway,sizeof(next.gateway))||
+       !form_read(body,"mask",next.mask,sizeof(next.mask))||
+       !form_read(body,"dns",next.dns,sizeof(next.dns)))return respond_json(req,400,"{\"error\":\"Form IP tidak lengkap\"}");
+    if(next.ssid[0] && (strlen(next.wifi_password)<8 || strlen(next.wifi_password)>63)){
+        return respond_json(req,400,"{\"error\":\"Isi password Wi-Fi minimal 8 karakter\"}");
+    }
+    if(next.static_ip && (!ip_ok(next.ip)||!ip_ok(next.gateway)||!ip_ok(next.mask)||!ip_ok(next.dns))){
+        return respond_json(req,400,"{\"error\":\"Alamat IP/Gateway/Mask/DNS harus IPv4 valid\"}");
+    }
+    if(gms_store_save_wifi(&next)!=ESP_OK)return respond_json(req,500,"{\"error\":\"Gagal menyimpan NVS\"}");
+    esp_err_t er=respond_json(req,200,"{\"ok\":true,\"restart\":true,\"note\":\"ESP32 reboot; alamat AP tetap 192.168.4.1\"}");
+    gms_schedule_restart();return er;
+}
+static esp_err_t save_mqtt(httpd_req_t *req){
+    if(!csrf_ok(req))return respond_json(req,403,"{\"error\":\"Sesi/CSRF tidak valid\"}");
+    char body[MAX_BODY+1],port[8],interval[8],token[161];
+    if(request_body(req,body,sizeof(body))!=ESP_OK)return respond_json(req,400,"{\"error\":\"Form tidak valid\"}");
+    gms_settings_t next=gms_settings;
+    if(!form_read(body,"host",next.mqtt_host,sizeof(next.mqtt_host))||
+       !form_read(body,"port",port,sizeof(port))||
+       !form_read(body,"interval",interval,sizeof(interval))||
+       !form_read(body,"token",token,sizeof(token))){
+        return respond_json(req,400,"{\"error\":\"Form MQTT belum lengkap\"}");
+    }
+    if(!hostname_ok(next.mqtt_host)||!is_all_digits(port)||!is_all_digits(interval)){
+        return respond_json(req,400,"{\"error\":\"Host, port, atau interval tidak valid\"}");
+    }
+    unsigned long p=strtoul(port,NULL,10),sec=strtoul(interval,NULL,10);
+    if(p<1||p>65535||sec<5||sec>3600)return respond_json(req,400,"{\"error\":\"Port harus 1-65535; interval 5-3600 detik\"}");
+    next.mqtt_port=(uint16_t)p;next.interval_s=(uint16_t)sec;
+    if(token[0]){
+        if(!check_string(token,160,false))return respond_json(req,400,"{\"error\":\"Token tidak valid\"}");
+        strcpy(next.mqtt_token,token);
+    }
+    if(gms_store_save_mqtt(&next)!=ESP_OK)return respond_json(req,500,"{\"error\":\"Gagal menyimpan NVS\"}");
+    esp_err_t er=respond_json(req,200,"{\"ok\":true,\"restart\":true,\"note\":\"MQTT akan dimulai ulang dengan TLS\"}");
+    gms_schedule_restart();return er;
+}
+static esp_err_t change_admin(httpd_req_t *req){
+    if(!csrf_ok(req))return respond_json(req,403,"{\"error\":\"Sesi/CSRF tidak valid\"}");
+    char body[MAX_BODY+1],old[130],pw[130];
+    if(request_body(req,body,sizeof(body))!=ESP_OK||
+      !form_read(body,"old_password",old,sizeof(old))||
+      !form_read(body,"new_password",pw,sizeof(pw)))return respond_json(req,400,"{\"error\":\"Input tidak valid\"}");
+    esp_err_t er=gms_store_change_admin(old,pw);
+    memset(old,0,sizeof(old));memset(pw,0,sizeof(pw));
+    if(er!=ESP_OK)return respond_json(req,400,"{\"error\":\"Password lama salah atau password baru minimal 12 karakter\"}");
+    memset(&s_session,0,sizeof(s_session));
+    return respond_json(req,200,"{\"ok\":true,\"note\":\"Password diubah, silakan login ulang\"}");
+}
+void gms_web_start(void){
+    httpd_config_t cfg=HTTPD_DEFAULT_CONFIG();
+    cfg.max_uri_handlers=19;cfg.stack_size=10240;cfg.max_open_sockets=5;cfg.lru_purge_enable=true;
+    esp_err_t er=httpd_start(&s_server,&cfg);
+    if(er!=ESP_OK){ESP_LOGE(TAG,"HTTP server start failed %s",esp_err_to_name(er));return;}
+#define ROUTE(path,verb,fn) do{\
+    const httpd_uri_t route={.uri=path,.method=verb,.handler=fn};\
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server,&route));\
+}while(0)
+    ROUTE("/",HTTP_GET,page_dash);
+    ROUTE("/login",HTTP_GET,page_login);
+    ROUTE("/login.html",HTTP_GET,page_login);
+    ROUTE("/dashboard",HTTP_GET,page_dash);
+    ROUTE("/dashboard.html",HTTP_GET,page_dash);
+    ROUTE("/settings",HTTP_GET,page_settings);
+    ROUTE("/setup.html",HTTP_GET,page_settings);
+    ROUTE("/assets/style.css",HTTP_GET,get_css);
+    ROUTE("/assets/app.js",HTTP_GET,get_js);
+    ROUTE("/api/login",HTTP_POST,post_login);
+    ROUTE("/api/logout",HTTP_POST,post_logout);
+    ROUTE("/api/status",HTTP_GET,get_status);
+    ROUTE("/api/config",HTTP_GET,get_config);
+    ROUTE("/api/config/wifi",HTTP_POST,save_wifi);
+    ROUTE("/api/config/mqtt",HTTP_POST,save_mqtt);
+    ROUTE("/api/config/admin",HTTP_POST,change_admin);
+#undef ROUTE
+    ESP_LOGI(TAG,"HTTP dashboard running: http://192.168.4.1 (AP) or STA IP");
+}

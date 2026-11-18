@@ -1,0 +1,152 @@
+#include "gms.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include "esp_log.h"
+#include "esp_random.h"
+#include "bootloader_random.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "mbedtls/sha256.h"
+
+static const char *TAG="GMS_CFG";
+gms_settings_t gms_settings;
+static char s_ap_pw[20];
+static uint8_t s_admin_salt[16],s_admin_digest[32];
+
+static void rand_alnum(char *out,size_t len) {
+    const char *charset="ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    const size_t base=strlen(charset);
+    for(size_t i=0;i<len;i++) out[i]=charset[esp_random()%base];
+    out[len]=0;
+}
+static void digest_password(const char *password,const uint8_t salt[16],uint8_t output[32]) {
+    uint8_t buf[16+128];size_t n=strlen(password);
+    if(n>128)n=128;
+    memcpy(buf,salt,16);memcpy(buf+16,password,n);
+    mbedtls_sha256(buf,n+16,output,0);
+    memset(buf,0,sizeof(buf));
+}
+static bool constant_equal(const uint8_t *a,const uint8_t *b,size_t n){
+    uint8_t diff=0;
+    for(size_t i=0;i<n;i++)diff|=a[i]^b[i];
+    return diff==0;
+}
+static void get_str(nvs_handle_t h,const char *key,char *dest,size_t capacity){
+    size_t n=capacity;
+    if(nvs_get_str(h,key,dest,&n)!=ESP_OK)dest[0]=0;
+}
+void gms_store_init(void){
+    esp_err_t er=nvs_flash_init();
+    if(er==ESP_ERR_NVS_NO_FREE_PAGES||er==ESP_ERR_NVS_NEW_VERSION_FOUND){
+        ESP_LOGW(TAG,"NVS partition incompatible; resetting NVS for bench provisioning");
+        ESP_ERROR_CHECK(nvs_flash_erase());er=nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(er);
+    /* RF is not started yet; enable SAR entropy while generating initial credentials. */
+    bootloader_random_enable();
+    nvs_handle_t h;
+    ESP_ERROR_CHECK(nvs_open("gmscfg",NVS_READWRITE,&h));
+    memset(&gms_settings,0,sizeof(gms_settings));
+    get_str(h,"ssid",gms_settings.ssid,sizeof(gms_settings.ssid));
+    get_str(h,"wifi_pw",gms_settings.wifi_password,sizeof(gms_settings.wifi_password));
+    get_str(h,"ip",gms_settings.ip,sizeof(gms_settings.ip));
+    get_str(h,"gw",gms_settings.gateway,sizeof(gms_settings.gateway));
+    get_str(h,"mask",gms_settings.mask,sizeof(gms_settings.mask));
+    get_str(h,"dns",gms_settings.dns,sizeof(gms_settings.dns));
+    get_str(h,"host",gms_settings.mqtt_host,sizeof(gms_settings.mqtt_host));
+    get_str(h,"token",gms_settings.mqtt_token,sizeof(gms_settings.mqtt_token));
+    uint8_t mode=0; nvs_get_u8(h,"static",&mode);gms_settings.static_ip=(mode!=0);
+    uint16_t val=0;
+    if(nvs_get_u16(h,"port",&val)==ESP_OK)gms_settings.mqtt_port=val;
+    else gms_settings.mqtt_port=8883;
+    val=0;
+    if(nvs_get_u16(h,"interval",&val)==ESP_OK && val>=5 && val<=3600)gms_settings.interval_s=val;
+    else gms_settings.interval_s=5;
+    if(!gms_settings.mqtt_host[0])strcpy(gms_settings.mqtt_host,"mqtt.thingsboard.cloud");
+    get_str(h,"ap_pw",s_ap_pw,sizeof(s_ap_pw));
+    if(!s_ap_pw[0]){
+        rand_alnum(s_ap_pw,14);
+        ESP_ERROR_CHECK(nvs_set_str(h,"ap_pw",s_ap_pw));
+    }
+    size_t n=sizeof(s_admin_salt);
+    esp_err_t e1=nvs_get_blob(h,"adm_salt",s_admin_salt,&n);
+    n=sizeof(s_admin_digest);
+    esp_err_t e2=nvs_get_blob(h,"adm_hash",s_admin_digest,&n);
+    if(e1!=ESP_OK||e2!=ESP_OK){
+        char pw[21];rand_alnum(pw,18);esp_fill_random(s_admin_salt,sizeof(s_admin_salt));
+        digest_password(pw,s_admin_salt,s_admin_digest);
+        ESP_ERROR_CHECK(nvs_set_blob(h,"adm_salt",s_admin_salt,sizeof(s_admin_salt)));
+        ESP_ERROR_CHECK(nvs_set_blob(h,"adm_hash",s_admin_digest,sizeof(s_admin_digest)));
+        ESP_LOGW(TAG,"================= FIRST BOOT =================");
+        ESP_LOGW(TAG,"GMS WEB username: admin");
+        ESP_LOGW(TAG,"GMS WEB initial password: %s",pw);
+        ESP_LOGW(TAG,"SAVE password NOW; not logged again after reboot");
+        ESP_LOGW(TAG,"==============================================");
+        memset(pw,0,sizeof(pw));
+    }
+    ESP_ERROR_CHECK(nvs_commit(h));nvs_close(h);
+    bootloader_random_disable();
+}
+void gms_store_get_ap_password(char out[20]){strcpy(out,s_ap_pw);}
+bool gms_store_verify_admin(const char *password){
+    if(!password || strlen(password)>128)return false;
+    uint8_t digest[32];digest_password(password,s_admin_salt,digest);
+    bool ok=constant_equal(digest,s_admin_digest,sizeof(digest));
+    memset(digest,0,sizeof(digest));return ok;
+}
+esp_err_t gms_store_change_admin(const char *old_password,const char *new_password){
+    if(!gms_store_verify_admin(old_password))return ESP_ERR_INVALID_STATE;
+    size_t len=strlen(new_password);
+    if(len<12||len>64)return ESP_ERR_INVALID_ARG;
+    uint8_t new_salt[16],new_digest[32];esp_fill_random(new_salt,sizeof(new_salt));
+    digest_password(new_password,new_salt,new_digest);
+    nvs_handle_t h;esp_err_t er=nvs_open("gmscfg",NVS_READWRITE,&h);
+    if(er!=ESP_OK)return er;
+    er=nvs_set_blob(h,"adm_salt",new_salt,sizeof(new_salt));
+    if(er==ESP_OK)er=nvs_set_blob(h,"adm_hash",new_digest,sizeof(new_digest));
+    if(er==ESP_OK)er=nvs_commit(h);
+    nvs_close(h);
+    if(er==ESP_OK){memcpy(s_admin_salt,new_salt,16);memcpy(s_admin_digest,new_digest,32);}
+    return er;
+}
+esp_err_t gms_store_save_wifi(const gms_settings_t *next){
+    nvs_handle_t h;esp_err_t er=nvs_open("gmscfg",NVS_READWRITE,&h);
+    if(er!=ESP_OK)return er;
+    er=nvs_set_str(h,"ssid",next->ssid);
+    if(er==ESP_OK)er=nvs_set_str(h,"wifi_pw",next->wifi_password);
+    if(er==ESP_OK)er=nvs_set_u8(h,"static",next->static_ip?1:0);
+    if(er==ESP_OK)er=nvs_set_str(h,"ip",next->ip);
+    if(er==ESP_OK)er=nvs_set_str(h,"gw",next->gateway);
+    if(er==ESP_OK)er=nvs_set_str(h,"mask",next->mask);
+    if(er==ESP_OK)er=nvs_set_str(h,"dns",next->dns);
+    if(er==ESP_OK)er=nvs_commit(h);
+    nvs_close(h);
+    if(er==ESP_OK){
+        strcpy(gms_settings.ssid,next->ssid);
+        strcpy(gms_settings.wifi_password,next->wifi_password);
+        gms_settings.static_ip=next->static_ip;
+        strcpy(gms_settings.ip,next->ip);
+        strcpy(gms_settings.gateway,next->gateway);
+        strcpy(gms_settings.mask,next->mask);
+        strcpy(gms_settings.dns,next->dns);
+    }
+    return er;
+}
+esp_err_t gms_store_save_mqtt(const gms_settings_t *next){
+    nvs_handle_t h;esp_err_t er=nvs_open("gmscfg",NVS_READWRITE,&h);
+    if(er!=ESP_OK)return er;
+    er=nvs_set_str(h,"host",next->mqtt_host);
+    if(er==ESP_OK)er=nvs_set_str(h,"token",next->mqtt_token);
+    if(er==ESP_OK)er=nvs_set_u16(h,"port",next->mqtt_port);
+    if(er==ESP_OK)er=nvs_set_u16(h,"interval",next->interval_s);
+    if(er==ESP_OK)er=nvs_commit(h);
+    nvs_close(h);
+    if(er==ESP_OK){
+        strcpy(gms_settings.mqtt_host,next->mqtt_host);
+        strcpy(gms_settings.mqtt_token,next->mqtt_token);
+        gms_settings.mqtt_port=next->mqtt_port;
+        gms_settings.interval_s=next->interval_s;
+    }
+    return er;
+}

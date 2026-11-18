@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Konfigurasi | GMS Internal</title>
+
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+
+<body data-page="settings">
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo small">▣</span>
+    <div>
+      <strong>GMS Internal</strong>
+      <small>Embedded Device Console</small>
+    </div>
+  </div>
+
+  <nav>
+    <a href="/dashboard">Monitoring</a>
+    <a class="active" href="/settings">Konfigurasi</a>
+    <button class="button text" id="logout">Keluar</button>
+  </nav>
+</header>
+
+<main class="wrap">
+
+  <div class="heading">
+    <div>
+      <p class="eyebrow">DEVICE & CONNECTIVITY</p>
+      <h1>Pengaturan Perangkat</h1>
+      <p class="muted">
+        Pengaturan disimpan di NVS ESP32-S3.
+        Penyimpanan Wi-Fi/MQTT menyebabkan perangkat restart.
+        Pengaturan sensor dapat diterapkan tanpa restart.
+      </p>
+    </div>
+
+    <div class="pill">ADMIN ONLY</div>
+  </div>
+
+  <div class="alert">
+    Dashboard tetap tersedia melalui Wi-Fi AP
+    <b id="ap-info">GMS-Internal-XXXX</b>
+    di <b>http://192.168.4.1</b>,
+    bahkan jika SSID kantor salah.
+    Mode HTTP hanya untuk pengujian pada jaringan tepercaya.
+  </div>
+
+  <div class="settings-grid">
+
+    <!-- ========================================= -->
+    <!-- 01 WIFI & IP -->
+    <!-- ========================================= -->
+
+    <section class="panel">
+      <h2>01 · Wi-Fi & IP</h2>
+
+      <p class="muted">
+        Hubungkan ESP32-S3 ke Wi-Fi 2,4 GHz.
+        Gunakan DHCP kecuali IP statis benar-benar diperlukan.
+      </p>
+
+      <form id="wifi-form">
+
+        <label>
+          Nama Wi-Fi (SSID)
+          <input
+            name="ssid"
+            id="ssid"
+            maxlength="32"
+            autocomplete="off"
+            placeholder="Contoh: masch.internal"
+          >
+        </label>
+
+        <label>
+          Password Wi-Fi (kosong = pertahankan)
+          <input
+            name="wifi_password"
+            type="password"
+            autocomplete="new-password"
+            maxlength="63"
+            placeholder="Password baru (opsional)"
+          >
+        </label>
+
+        <label>
+          Mode IPv4
+          <select name="mode" id="ip-mode">
+            <option value="dhcp">DHCP / Otomatis</option>
+            <option value="static">Static IP / Manual</option>
+          </select>
+        </label>
+
+        <div class="two-col" id="manual-ip-fields">
+
+          <label>
+            IPv4 Address
+            <input
+              name="ip"
+              id="ip"
+              placeholder="192.168.1.150"
+              inputmode="decimal"
+            >
+          </label>
+
+          <label>
+            Gateway
+            <input
+              name="gateway"
+              id="gateway"
+              placeholder="192.168.1.1"
+              inputmode="decimal"
+            >
+          </label>
+
+          <label>
+            Netmask
+            <input
+              name="mask"
+              id="mask"
+              placeholder="255.255.255.0"
+              inputmode="decimal"
+            >
+          </label>
+
+          <label>
+            DNS
+            <input
+              name="dns"
+              id="dns"
+              placeholder="8.8.8.8"
+              inputmode="decimal"
+            >
+          </label>
+
+        </div>
+
+        <button class="button primary" type="submit">
+          Hubungkan Wi-Fi &amp; Dapatkan IP
+        </button>
+
+        <p class="message" id="wifi-msg" role="status"></p>
+
+        <div
+          class="wifi-result"
+          id="wifi-result"
+          hidden
+          aria-live="polite"
+        >
+
+          <div class="wifi-result-head">
+            <strong>Hasil Koneksi Wi-Fi</strong>
+            <span class="wifi-demo-tag" id="wifi-result-tag">
+              STATUS AKTUAL
+            </span>
+          </div>
+
+          <p class="wifi-result-status">
+            ● Terhubung ke Wi-Fi
+          </p>
+
+          <div class="wifi-result-grid">
+
+            <div>
+              <span>Wi-Fi terpilih</span>
+              <strong id="wifi-result-ssid">—</strong>
+            </div>
+
+            <div>
+              <span>Mode IPv4</span>
+              <strong id="wifi-result-mode">—</strong>
+            </div>
+
+            <div>
+              <span>IP Access Point</span>
+              <strong id="wifi-result-ap">
+                192.168.4.1
+              </strong>
+            </div>
+
+            <div>
+              <span>IP Wi-Fi (STA) baru</span>
+              <strong id="wifi-result-sta">—</strong>
+            </div>
+
+          </div>
+
+          <a
+            class="button primary wifi-result-link"
+            href="/dashboard"
+            id="wifi-open-dashboard"
+          >
+            Buka Dashboard
+          </a>
+
+          <p class="wifi-result-foot">
+            Alamat IP STA berasal dari koneksi nyata ESP32-S3.
+            Setelah menyimpan Wi-Fi, perangkat restart;
+            sambungkan kembali dan muat ulang halaman ini
+            untuk melihat IP yang diterima.
+          </p>
+
+        </div>
+
+      </form>
+    </section>
+
+    <!-- ========================================= -->
+    <!-- 02 MQTT -->
+    <!-- ========================================= -->
+
+    <section class="panel">
+
+      <h2>02 · MQTT ThingsBoard / Mastify</h2>
+
+      <p class="muted">
+        MQTT menggunakan TLS dan ThingsBoard-compatible token
+        sebagai username. Token tidak ditampilkan kembali.
+      </p>
+
+      <form id="mqtt-form">
+
+        <label>
+          Host MQTT (pilih server)
+
+          <select name="host" id="mqtt-host" required>
+
+            <option value="mqtt.thingsboard.cloud">
+              ThingsBoard Cloud — mqtt.thingsboard.cloud
+            </option>
+
+            <option value="mqtt.eu.thingsboard.cloud">
+              ThingsBoard Cloud EU — mqtt.eu.thingsboard.cloud
+            </option>
+
+            <option value="demo.thingsboard.io">
+              ThingsBoard Demo — demo.thingsboard.io
+            </option>
+
+          </select>
+        </label>
+
+        <div class="two-col">
+
+          <label>
+            Port TLS
+            <input
+              name="port"
+              type="number"
+              id="mqtt-port"
+              value="8883"
+              min="1"
+              max="65535"
+              required
+            >
+          </label>
+
+          <label>
+            Publish setiap (detik)
+            <input
+              name="interval"
+              id="mqtt-interval"
+              type="number"
+              min="5"
+              max="3600"
+              value="5"
+              required
+            >
+          </label>
+
+        </div>
+
+        <label>
+          Access Token (kosong = pertahankan)
+          <input
+            name="token"
+            type="password"
+            maxlength="160"
+            autocomplete="new-password"
+            placeholder="Token GMS-001 / Mastify"
+          >
+        </label>
+
+        <div class="field-help">
+          Topic publish tetap
+          <code>v1/devices/me/telemetry</code>.
+          Subscribe atribut dan RPC bersifat read-only.
+          Relay tidak bisa diaktifkan melalui web atau MQTT.
+        </div>
+
+        <button class="button primary" type="submit">
+          Simpan MQTT &amp; Restart
+        </button>
+
+        <p class="message" id="mqtt-msg" role="status"></p>
+
+      </form>
+
+      <hr>
+      <h2>MQTT 2 · Mastify Asri (Opsional)</h2>
+      <p class="muted">Koneksi tambahan, tidak menggantikan MQTT ThingsBoard.
+      Port Mastify saat ini menggunakan MQTT biasa (tanpa TLS); gunakan hanya pada jaringan uji tepercaya.
+      Simpan konfigurasi akan me-restart ESP32-S3.</p>
+      <form id="mqtt2-form">
+        <label>Status MQTT 2
+          <select name="enabled" id="mqtt2-enabled">
+            <option value="false">OFF — Nonaktif</option>
+            <option value="true">ON — Aktifkan Mastify Asri</option>
+          </select>
+        </label>
+        <label>Host Mastify
+          <input name="host" id="mqtt2-host" maxlength="96" value="178.128.107.238" required>
+        </label>
+        <div class="two-col">
+          <label>Port MQTT (tanpa TLS)
+            <input type="number" min="1" max="65535" name="port" id="mqtt2-port" value="1886" required>
+          </label>
+          <label>Status koneksi
+            <strong id="mqtt2-status">Belum terhubung</strong>
+          </label>
+        </div>
+        <label>Access Token Asri (kosong = pertahankan)
+          <input type="password" name="token" maxlength="160" autocomplete="new-password"
+                 placeholder="Isi token device TA-GMS-DEV-01 saat konfigurasi awal">
+        </label>
+        <div class="field-help">
+          Device: <code>TA-GMS-DEV-01</code> · Topic: <code>v1/devices/me/telemetry</code>.
+          Payload menggunakan <code>ts</code> + <code>values</code> (schema Asri).
+          Data level dalam persen tidak dikirim sebagai mm; data EWIG tidak dipetakan sebelum validasi.
+        </div>
+        <button class="button primary" type="submit">Simpan MQTT 2 &amp; Restart</button>
+        <p class="message" id="mqtt2-msg" role="status"></p>
+      </form>
+      <hr>
+
+      <!-- ========================================= -->
+      <!-- 03 ADMIN SECURITY -->
+      <!-- ========================================= -->
+
+      <h2>03 · Keamanan Login</h2>
+
+      <form id="admin-form">
+
+        <label>
+          Password sekarang
+          <input
+            name="old_password"
+            type="password"
+            required
+            autocomplete="current-password"
+          >
+        </label>
+
+        <label>
+          Password baru (minimal 12 karakter)
+          <input
+            name="new_password"
+            type="password"
+            required
+            minlength="12"
+            maxlength="64"
+            autocomplete="new-password"
+          >
+        </label>
+
+        <button class="button outline" type="submit">
+          Ubah Password Admin
+        </button>
+
+        <p class="message" id="admin-msg" role="status"></p>
+
+      </form>
+
+    </section>
+
+  </div>
+
+  <!-- ========================================= -->
+  <!-- Tank geometry is separate from HDL300 physical transmitter span. -->
+  <section class="panel space" id="tank-settings-panel">
+    <h2>04 — Konfigurasi Tangki (HDL300 A2)</h2>
+    <p class="muted">Isi ukuran bagian dalam tangki. Nilai level ke Mastify selalu milimeter;
+       persentase dihitung dari tinggi tangki; liter dihitung untuk tangki kotak/persegi panjang.</p>
+    <form id="tank-config-form">
+      <div class="settings-grid">
+        <label>Panjang dalam (cm)<input type="number" name="tank_length_cm" step="any" min="0.1" required></label>
+        <label>Lebar dalam (cm)<input type="number" name="tank_width_cm" step="any" min="0.1" required></label>
+        <label>Tinggi dalam (cm)<input type="number" name="tank_height_cm" step="any" min="1" required></label>
+        <label>Kalibrasi dua titik
+          <select name="tank_calibration_enabled" id="tank-cal-enabled">
+            <option value="0">NONAKTIF — skala fisik 0–5 m</option>
+            <option value="1">AKTIF — referensi mA terukur (uji bench)</option>
+          </select>
+        </label>
+        <label>Arus referensi saat 0 mm (mA)<input type="number" name="tank_zero_ma" step="any" required></label>
+        <label>Arus referensi kedalaman air (mA)<input type="number" name="tank_reference_ma" step="any" required></label>
+        <label>Kedalaman referensi (mm)<input type="number" name="tank_reference_depth_mm" step="any" min="10" required></label>
+      </div>
+      <p class="muted">PENTING: jangan aktifkan kalibrasi dua titik jika pembacaan mA di titik nol dan referensi belum stabil dan berulang. Ukuran P/L/T tidak mengubah rentang fisik HDL300 0–5 m.</p>
+      <button class="button primary" type="submit">Simpan Konfigurasi Tangki (NVS)</button>
+      <p id="tank-config-msg" class="message" role="status"></p>
+    </form>
+  </section>
+
+  <!-- 04 SENSOR CALIBRATION & THRESHOLD -->
+  <!-- ========================================= -->
+
+  <section class="panel space" id="sensor-settings-panel">
+
+    <h2>04 · Kalibrasi & Ambang Batas Sensor</h2>
+
+    <p class="muted">
+      Sesuaikan rentang pembacaan 4–20 mA, nilai keluaran,
+      dan batas peringatan masing-masing sensor.
+      Konfigurasi disimpan ke NVS tanpa restart.
+    </p>
+
+    <div class="alert">
+      <strong>Mode Bench Test:</strong>
+      Fitur ini mengatur scaling sensor dan indikator peringatan.
+      Tidak mengaktifkan relay atau shutdown otomatis.
+      Nilai threshold harus mengikuti spesifikasi sensor dan
+      kebutuhan operasional mesin.
+    </div>
+
+    <form id="sensor-config-form">
+
+      <div class="settings-grid">
+
+        <!-- TEMPERATURE A0 -->
+
+        <div class="panel">
+
+          <h2>Temperature · A0</h2>
+
+          <p class="muted">
+            Sensor suhu melalui ADS1115 kanal A0.
+            Satuan keluaran: °C.
+          </p>
+
+          <div class="two-col">
+
+            <label>
+              Input Minimum (mA)
+              <input type="number" step="any"
+                name="temperature_input_min_ma"
+                required>
+            </label>
+
+            <label>
+              Input Maximum (mA)
+              <input type="number" step="any"
+                name="temperature_input_max_ma"
+                required>
+            </label>
+
+            <label>
+              Output Minimum (°C)
+              <input type="number" step="any"
+                name="temperature_output_min"
+                required>
+            </label>
+
+            <label>
+              Output Maximum (°C)
+              <input type="number" step="any"
+                name="temperature_output_max"
+                required>
+            </label>
+
+            <label>
+              Critical Low (°C)
+              <input type="number" step="any"
+                name="temperature_critical_low"
+                required>
+            </label>
+
+            <label>
+              Warning Low (°C)
+              <input type="number" step="any"
+                name="temperature_warning_low"
+                required>
+            </label>
+
+            <label>
+              Warning High (°C)
+              <input type="number" step="any"
+                name="temperature_warning_high"
+                required>
+            </label>
+
+            <label>
+              Critical High (°C)
+              <input type="number" step="any"
+                name="temperature_critical_high"
+                required>
+            </label>
+
+          </div>
+        </div>
+
+        <!-- LEVEL A2 -->
+
+        <div class="panel">
+
+          <h2>Level · A2</h2>
+
+          <p class="muted">
+            Sensor level melalui ADS1115 kanal A2.
+            Satuan keluaran: %.
+          </p>
+
+          <div class="two-col">
+
+            <label>
+              Input Minimum (mA)
+              <input type="number" step="any"
+                name="level_input_min_ma"
+                required>
+            </label>
+
+            <label>
+              Input Maximum (mA)
+              <input type="number" step="any"
+                name="level_input_max_ma"
+                required>
+            </label>
+
+            <label>
+              Output Minimum (%)
+              <input type="number" step="any"
+                name="level_output_min"
+                required>
+            </label>
+
+            <label>
+              Output Maximum (%)
+              <input type="number" step="any"
+                name="level_output_max"
+                required>
+            </label>
+
+            <label>
+              Critical Low (%)
+              <input type="number" step="any"
+                name="level_critical_low"
+                required>
+            </label>
+
+            <label>
+              Warning Low (%)
+              <input type="number" step="any"
+                name="level_warning_low"
+                required>
+            </label>
+
+            <label>
+              Warning High (%)
+              <input type="number" step="any"
+                name="level_warning_high"
+                required>
+            </label>
+
+            <label>
+              Critical High (%)
+              <input type="number" step="any"
+                name="level_critical_high"
+                required>
+            </label>
+
+          </div>
+        </div>
+
+        <!-- PRESSURE A3 -->
+
+        <div class="panel">
+
+          <h2>Pressure · A3</h2>
+
+          <p class="muted">
+            Sensor tekanan melalui ADS1115 kanal A3.
+            Satuan keluaran: bar.
+          </p>
+
+          <div class="two-col">
+
+            <label>
+              Input Minimum (mA)
+              <input type="number" step="any"
+                name="pressure_input_min_ma"
+                required>
+            </label>
+
+            <label>
+              Input Maximum (mA)
+              <input type="number" step="any"
+                name="pressure_input_max_ma"
+                required>
+            </label>
+
+            <label>
+              Output Minimum (bar)
+              <input type="number" step="any"
+                name="pressure_output_min"
+                required>
+            </label>
+
+            <label>
+              Output Maximum (bar)
+              <input type="number" step="any"
+                name="pressure_output_max"
+                required>
+            </label>
+
+            <label>
+              Critical Low (bar)
+              <input type="number" step="any"
+                name="pressure_critical_low"
+                required>
+            </label>
+
+            <label>
+              Warning Low (bar)
+              <input type="number" step="any"
+                name="pressure_warning_low"
+                required>
+            </label>
+
+            <label>
+              Warning High (bar)
+              <input type="number" step="any"
+                name="pressure_warning_high"
+                required>
+            </label>
+
+            <label>
+              Critical High (bar)
+              <input type="number" step="any"
+                name="pressure_critical_high"
+                required>
+            </label>
+
+          </div>
+        </div>
+
+      </div>
+
+      <div style="margin-top:24px">
+
+        <button
+          class="button primary"
+          type="submit"
+          id="sensor-save-btn"
+        >
+          Simpan Konfigurasi Sensor
+        </button>
+
+        <p
+          class="message"
+          id="sensor-config-msg"
+          role="status"
+        ></p>
+
+      </div>
+
+    </form>
+
+  </section>
+
+  <!-- ========================================= -->
+  <!-- UNIVERSAL SENSOR BENCH SIMULATION -->
+  <!-- ========================================= -->
+  <section class="panel space" style="border:2px solid #c08545">
+    <h2>Simulasi Arus Sensor (A0 / A2 / A3) — BENCH TEST</h2>
+    <p class="muted">SIMULASI ON: satu sensor dipilih dan nilai mA virtual dipakai pada dashboard dan MQTT. Dua sensor lainnya tetap REAL. SIMULASI OFF: semua kembali REAL pada siklus telemetri berikutnya. Sensor fisik tetap dibaca. Maksimum 120 detik.</p>
+    <p class="muted"><strong>Hanya untuk perangkat uji:</strong> jangan sambungkan alarm simulasi ke relay, proteksi, atau insiden produksi.</p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0">
+      <label style="flex:1;min-width:180px">Pilih sensor
+        <select id="sensor-test-channel" class="input" style="display:block;width:100%;margin-top:8px">
+          <option value="pressure">Pressure A3</option>
+          <option value="temp">Temperature A0</option>
+          <option value="level">Level A2</option>
+        </select>
+      </label>
+      <label style="flex:1;min-width:180px">Arus simulasi (mA) 0–24
+        <input id="sensor-test-ma" class="input" type="number" min="0" max="24" step="0.1" value="20.8" style="display:block;width:100%;margin-top:8px">
+      </label>
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">
+      <button class="button primary" type="button" id="sensor-test-start">START Simulasi</button>
+      <button class="button" type="button" id="sensor-test-stop">STOP — Kembali REAL</button>
+    </div>
+    <p class="message" id="sensor-test-msg" role="status">Mode uji nonaktif saat ESP32 restart. Nilai data tes akan selalu ditandai dalam telemetri.</p>
+  </section>
+
+  <!-- ========================================= -->
+  <!-- SYSTEM INFORMATION -->
+  <!-- ========================================= -->
+
+  <section class="panel space">
+
+    <h2>Informasi & Batasan</h2>
+
+    <p class="muted">
+      Sensor: A0 suhu; A2 level; A3 tekanan.
+      EWIG: UART1 TX15/RX16/RTS14, 9600 8N1, slave 1.
+      56 Ω per loop.
+
+      Data MQTT tetap dikirim dari firmware secara langsung.
+
+      Paket bench test ini belum memiliki OTA,
+      persistent offline queue, validasi metrologis sensor,
+      ataupun driver relay untuk proteksi mesin.
+    </p>
+
+  </section>
+
+</main>
+
+<footer class="footer">
+  Hati-hati: perubahan IP statis yang salah dapat
+  memutus akses Wi-Fi kantor.
+  Gunakan IP AP 192.168.4.1 untuk pemulihan.
+</footer>
+
+</body>
+</html> 
