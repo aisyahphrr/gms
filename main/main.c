@@ -1369,9 +1369,17 @@ static void handle_ota_attributes(const char *payload, const char *host, const c
     if (!payload || !host || !token || !token[0]) return;
     char fw_title[64] = {0};
     char fw_version[64] = {0};
-    if (json_extract_string(payload, "fw_title", fw_title, sizeof(fw_title)) &&
-        json_extract_string(payload, "fw_version", fw_version, sizeof(fw_version))) {
 
+    /* Ekstrak fw_title atau fallback ke title */
+    if (!json_extract_string(payload, "fw_title", fw_title, sizeof(fw_title))) {
+        json_extract_string(payload, "title", fw_title, sizeof(fw_title));
+    }
+    /* Ekstrak fw_version atau fallback ke version */
+    if (!json_extract_string(payload, "fw_version", fw_version, sizeof(fw_version))) {
+        json_extract_string(payload, "version", fw_version, sizeof(fw_version));
+    }
+
+    if (fw_title[0] && fw_version[0]) {
         const esp_app_desc_t *desc = esp_app_get_description();
         const char *cur_ver = desc ? desc->version : "1.0.0";
         if (strcmp(fw_version, cur_ver) == 0) {
@@ -1637,21 +1645,23 @@ static void mqtt2_event(void *arg, esp_event_base_t base, int32_t id, void *data
             s_mqtt2_connected = false;
             ESP_LOGW(TAG, "MASTIFY MQTT 2 disconnected");
             break;
+        case MQTT_EVENT_SUBSCRIBED: {
+            esp_mqtt_event_handle_t ev = (esp_mqtt_event_handle_t)data;
+            ESP_LOGI(TAG, "MASTIFY MQTT 2 SUBSCRIBED ID=%d", ev ? ev->msg_id : 0);
+            break;
+        }
         case MQTT_EVENT_DATA: {
             esp_mqtt_event_handle_t ev = (esp_mqtt_event_handle_t)data;
-            if (ev->topic && ev->topic_len > 0 && ev->data && ev->data_len > 0) {
+            if (ev && ev->data && ev->data_len > 0) {
                 char buf[512];
                 int copy_len = ev->data_len < (int)sizeof(buf) - 1 ? ev->data_len : (int)sizeof(buf) - 1;
                 memcpy(buf, ev->data, copy_len);
                 buf[copy_len] = '\0';
 
-                if ((ev->topic_len >= (int)strlen(GMS_TOPIC_ATTRIBUTES) &&
-                     strncmp(ev->topic, GMS_TOPIC_ATTRIBUTES, strlen(GMS_TOPIC_ATTRIBUTES)) == 0) ||
-                    (ev->topic_len >= 34 &&
-                     strncmp(ev->topic, "v1/devices/me/attributes/response/", 34) == 0)) {
-                    ESP_LOGI(TAG, "MASTIFY Shared Attributes: %s", buf);
-                    handle_ota_attributes(buf, gms_mqtt2_settings.host, gms_mqtt2_settings.token);
-                }
+                ESP_LOGI(TAG, "MASTIFY MQTT 2 RX (topic=%.*s): %s",
+                         ev->topic_len, ev->topic ? ev->topic : "N/A", buf);
+
+                handle_ota_attributes(buf, gms_mqtt2_settings.host, gms_mqtt2_settings.token);
             }
             break;
         }
@@ -1709,6 +1719,18 @@ static void mqtt_network_task(
                     mqtt_start_stored_config();
                 if (!s_mqtt2_started && gms_mqtt2_settings.enabled)
                     mqtt2_start_stored_config();
+            }
+
+            /* Polling atribut OTA dari Mastify setiap 15 detik */
+            if (s_mqtt2_connected && s_mqtt2_client) {
+                static int s_ota_poll_cnt = 0;
+                if (++s_ota_poll_cnt >= 3) {
+                    s_ota_poll_cnt = 0;
+                    esp_mqtt_client_publish(s_mqtt2_client,
+                                            "v1/devices/me/attributes/request/1",
+                                            "{\"sharedKeys\":\"fw_title,fw_version,title,version\"}",
+                                            0, 1, 0);
+                }
             }
         }
 
