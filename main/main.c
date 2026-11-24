@@ -1365,6 +1365,27 @@ static bool json_extract_string(const char *json, const char *key, char *out, si
     return (i > 0);
 }
 
+static void get_stored_ota_ver(char *out, size_t max_len) {
+    if (!out || max_len == 0) return;
+    out[0] = '\0';
+    nvs_handle_t h;
+    if (nvs_open("gms_ota", NVS_READONLY, &h) == ESP_OK) {
+        size_t required_size = max_len;
+        nvs_get_str(h, "last_ver", out, &required_size);
+        nvs_close(h);
+    }
+}
+
+static void save_stored_ota_ver(const char *ver) {
+    if (!ver || !ver[0]) return;
+    nvs_handle_t h;
+    if (nvs_open("gms_ota", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "last_ver", ver);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
 static void handle_ota_attributes(const char *payload, const char *host, const char *token) {
     if (!payload || !host || !token || !token[0]) return;
     char fw_title[64] = {0};
@@ -1382,10 +1403,16 @@ static void handle_ota_attributes(const char *payload, const char *host, const c
     if (fw_title[0] && fw_version[0]) {
         const esp_app_desc_t *desc = esp_app_get_description();
         const char *cur_ver = desc ? desc->version : "1.0.0";
-        if (strcmp(fw_version, cur_ver) == 0) {
-            ESP_LOGI(TAG, "Firmware aktif sudah versi terbaru: %s (OTA diabaikan)", cur_ver);
+        char stored_ver[64] = {0};
+        get_stored_ota_ver(stored_ver, sizeof(stored_ver));
+
+        if (strcmp(fw_version, cur_ver) == 0 ||
+            (stored_ver[0] && strcmp(fw_version, stored_ver) == 0)) {
+            ESP_LOGI(TAG, "Firmware aktif sudah versi terbaru: %s (OTA diabaikan)", fw_version);
             return;
         }
+
+        save_stored_ota_ver(fw_version);
 
         char ota_url[256];
         snprintf(ota_url, sizeof(ota_url),
@@ -1885,7 +1912,9 @@ static void publish(const gms_measurement_t *s)
     }
     uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
     const esp_app_desc_t *desc = esp_app_get_description();
-    const char *fw_ver = desc ? desc->version : "1.0.0";
+    char stored_ver[64] = {0};
+    get_stored_ota_ver(stored_ver, sizeof(stored_ver));
+    const char *fw_ver = stored_ver[0] ? stored_ver : (desc ? desc->version : "1.0.0");
     json_add(json, sizeof(json), &used,
              ",\"uptime_s\":%" PRIu32 ",\"buf_count\":0,\"reset_reason\":\"%s\",\"fw_ver\":\"%s\"",
              uptime_s, get_reset_reason_str(), fw_ver);
@@ -2008,7 +2037,9 @@ static void publish_mastify(const gms_measurement_t *s)
     if (first) return; // Schema requires at least one value.
     uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
     const esp_app_desc_t *desc = esp_app_get_description();
-    const char *fw_ver = desc ? desc->version : "1.0.0";
+    char stored_ver[64] = {0};
+    get_stored_ota_ver(stored_ver, sizeof(stored_ver));
+    const char *fw_ver = stored_ver[0] ? stored_ver : (desc ? desc->version : "1.0.0");
     json_add(json, sizeof(json), &used,
              ",\"uptime_s\":%" PRIu32 ",\"buf_count\":0,\"reset_reason\":\"%s\",\"fw_ver\":\"%s\"",
              uptime_s, get_reset_reason_str(), fw_ver);

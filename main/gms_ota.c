@@ -122,6 +122,10 @@ esp_err_t gms_ota_trigger(const char *url) {
         ESP_LOGE(TAG, "URL OTA tidak valid atau melebihi kapasitas buffer (maks %u)", (unsigned)sizeof(s_ota_url));
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_pending_verify && !s_verified) {
+        ESP_LOGW(TAG, "Partisi baru masih dalam swauji (PENDING_VERIFY), tunda pemicu OTA sampai tervalidasi");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_ota_busy) {
         ESP_LOGW(TAG, "Proses OTA sedang berjalan, abaikan pemicu baru");
         return ESP_ERR_INVALID_STATE;
