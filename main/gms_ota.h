@@ -35,6 +35,14 @@ void gms_ota_self_test_feed(bool mqtt_ok, bool adc_ok, bool modbus_ok);
 esp_err_t gms_ota_start_from_url(const char *url);
 
 /**
+ * @brief Memicu eksekusi OTA secara asinkron dari URL.
+ * Permintaan diserahkan ke task_ota (Core 1) agar tidak memblokir event loop MQTT.
+ * @param url Alamat URL biner firmware
+ * @return ESP_OK jika sinyal berhasil dikirim ke task_ota
+ */
+esp_err_t gms_ota_trigger(const char *url);
+
+/**
  * @brief Mendapatkan informasi partisi firmware yang sedang aktif dan deskripsi versi.
  * @param out_buf Buffer untuk menyimpan teks status partisi
  * @param max_len Panjang maksimum buffer

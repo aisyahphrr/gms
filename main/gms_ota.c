@@ -9,8 +9,13 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "GMS_OTA";
+
+static char s_ota_url[256] = {0};
+static SemaphoreHandle_t s_ota_sem = NULL;
+static bool s_ota_busy = false;
 
 static bool s_pending_verify = false;
 static bool s_verified = false;
@@ -112,6 +117,28 @@ esp_err_t gms_ota_start_from_url(const char *url) {
     return ret;
 }
 
+esp_err_t gms_ota_trigger(const char *url) {
+    if (!url || strlen(url) < 8 || strlen(url) >= sizeof(s_ota_url)) {
+        ESP_LOGE(TAG, "URL OTA tidak valid atau melebihi kapasitas buffer (maks %u)", (unsigned)sizeof(s_ota_url));
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_ota_busy) {
+        ESP_LOGW(TAG, "Proses OTA sedang berjalan, abaikan pemicu baru");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!s_ota_sem) {
+        s_ota_sem = xSemaphoreCreateBinary();
+        if (!s_ota_sem) return ESP_ERR_NO_MEM;
+    }
+
+    strncpy(s_ota_url, url, sizeof(s_ota_url) - 1);
+    s_ota_url[sizeof(s_ota_url) - 1] = '\0';
+    ESP_LOGI(TAG, "Sinyal OTA diterima. Menyerahkan unduhan ke task_ota (Core 1): %s", s_ota_url);
+    xSemaphoreGive(s_ota_sem);
+    return ESP_OK;
+}
+
 void gms_ota_get_partition_info(char *out_buf, size_t max_len) {
     if (!out_buf || max_len == 0) return;
 
@@ -137,13 +164,29 @@ void gms_ota_get_partition_info(char *out_buf, size_t max_len) {
 void task_ota(void *arg) {
     (void)arg;
 
+    if (!s_ota_sem) {
+        s_ota_sem = xSemaphoreCreateBinary();
+    }
+
     char info[128] = {0};
     gms_ota_get_partition_info(info, sizeof(info));
     ESP_LOGI(TAG, "task_ota online di Core %d (Prio %d) - %s",
              xPortGetCoreID(), (int)uxTaskPriorityGet(NULL), info);
 
     for (;;) {
-        /* Standby menunggu pemicu pembaruan OTA */
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        /* Menunggu sinyal pemicu OTA via Semaphore */
+        if (xSemaphoreTake(s_ota_sem, portMAX_DELAY) == pdTRUE) {
+            s_ota_busy = true;
+            ESP_LOGW(TAG, "==========================================================");
+            ESP_LOGW(TAG, "MEMULAI PROSES OTA DARI TASK_OTA (CORE 1):");
+            ESP_LOGW(TAG, "Target URL: %s", s_ota_url);
+            ESP_LOGW(TAG, "==========================================================");
+
+            esp_err_t ret = gms_ota_start_from_url(s_ota_url);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Proses OTA gagal dieksekusi (%s). Kembali standby.", esp_err_to_name(ret));
+            }
+            s_ota_busy = false;
+        }
     }
 }

@@ -71,6 +71,8 @@
 
 #include "gms.h"
 #include "gms_ota.h"
+#include "esp_app_desc.h"
+#include "esp_ota_ops.h"
 
 /* =====================================================
    HARDWARE CONFIGURATION
@@ -1303,6 +1305,67 @@ static bool sync_ntp(void) {
 }
 
 /* =====================================================
+   DIAGNOSTIC & THINGSBOARD OTA ATTRIBUTE HANDLER
+   ===================================================== */
+
+static const char *get_reset_reason_str(void) {
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   return "POWERON";
+        case ESP_RST_SW:        return "SW_RESET";
+        case ESP_RST_PANIC:     return "PANIC";
+        case ESP_RST_INT_WDT:   return "INT_WDT";
+        case ESP_RST_TASK_WDT:  return "TASK_WDT";
+        case ESP_RST_WDT:       return "OTHER_WDT";
+        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "UNKNOWN";
+    }
+}
+
+static bool json_extract_string(const char *json, const char *key, char *out, size_t max_len) {
+    if (!json || !key || !out || max_len == 0) return false;
+    char needle[64];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char *p = strstr(json, needle);
+    if (!p) return false;
+    p += strlen(needle);
+    while (*p == ' ' || *p == '\t' || *p == ':') p++;
+    if (*p != '\"') return false;
+    p++;
+    size_t i = 0;
+    while (*p && *p != '\"' && i < max_len - 1) {
+        if (*p == '\\' && *(p + 1)) p++;
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    return (i > 0);
+}
+
+static void handle_ota_attributes(const char *payload, const char *host, const char *token) {
+    if (!payload || !host || !token || !token[0]) return;
+    char fw_title[64] = {0};
+    char fw_version[64] = {0};
+    if (json_extract_string(payload, "fw_title", fw_title, sizeof(fw_title)) &&
+        json_extract_string(payload, "fw_version", fw_version, sizeof(fw_version))) {
+
+        const esp_app_desc_t *desc = esp_app_get_description();
+        const char *cur_ver = desc ? desc->version : "1.0.0";
+        if (strcmp(fw_version, cur_ver) == 0) {
+            ESP_LOGI(TAG, "Firmware aktif sudah versi terbaru: %s (OTA diabaikan)", cur_ver);
+            return;
+        }
+
+        char ota_url[256];
+        snprintf(ota_url, sizeof(ota_url),
+                 "http://%s:8080/api/v1/%s/firmware?title=%s&version=%s",
+                 host, token, fw_title, fw_version);
+        ESP_LOGW(TAG, "Menerima OTA dari ThingsBoard: %s (v%s) -> Memicu task_ota", fw_title, fw_version);
+        gms_ota_trigger(ota_url);
+    }
+}
+
+/* =====================================================
    MQTT EVENTS
    ===================================================== */
 
@@ -1386,6 +1449,16 @@ static void mqtt_event(
              * Read-only bench mode.
              * No relay activation.
              */
+
+            if (ev->topic_len >= (int)strlen(GMS_TOPIC_ATTRIBUTES) &&
+                strncmp(ev->topic, GMS_TOPIC_ATTRIBUTES, strlen(GMS_TOPIC_ATTRIBUTES)) == 0 &&
+                ev->data && ev->data_len > 0) {
+                char buf[512];
+                int copy_len = ev->data_len < (int)sizeof(buf) - 1 ? ev->data_len : (int)sizeof(buf) - 1;
+                memcpy(buf, ev->data, copy_len);
+                buf[copy_len] = '\0';
+                handle_ota_attributes(buf, gms_settings.mqtt_host, gms_settings.mqtt_token);
+            }
 
             if (
                 ev->topic_len > 26 &&
@@ -1525,16 +1598,40 @@ static void mqtt_start_stored_config(void) {
    ===================================================== */
 static void mqtt2_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    (void)arg; (void)base; (void)data;
+    (void)arg; (void)base;
     switch ((esp_mqtt_event_id_t)id) {
         case MQTT_EVENT_CONNECTED:
             s_mqtt2_connected = true;
             ESP_LOGI(TAG, "MASTIFY MQTT 2 CONNECTED");
+            esp_mqtt_client_subscribe(s_mqtt2_client, GMS_TOPIC_ATTRIBUTES, 1);
+            esp_mqtt_client_subscribe(s_mqtt2_client, "v1/devices/me/attributes/response/+", 1);
+            /* Minta shared attributes ThingsBoard (Mastify) */
+            esp_mqtt_client_publish(s_mqtt2_client, "v1/devices/me/attributes/request/1",
+                                    "{\"sharedKeys\":\"fw_title,fw_version,fw_size,fw_checksum\"}",
+                                    0, 1, 0);
             break;
         case MQTT_EVENT_DISCONNECTED:
             s_mqtt2_connected = false;
             ESP_LOGW(TAG, "MASTIFY MQTT 2 disconnected");
             break;
+        case MQTT_EVENT_DATA: {
+            esp_mqtt_event_handle_t ev = (esp_mqtt_event_handle_t)data;
+            if (ev->topic && ev->topic_len > 0 && ev->data && ev->data_len > 0) {
+                char buf[512];
+                int copy_len = ev->data_len < (int)sizeof(buf) - 1 ? ev->data_len : (int)sizeof(buf) - 1;
+                memcpy(buf, ev->data, copy_len);
+                buf[copy_len] = '\0';
+
+                if ((ev->topic_len >= (int)strlen(GMS_TOPIC_ATTRIBUTES) &&
+                     strncmp(ev->topic, GMS_TOPIC_ATTRIBUTES, strlen(GMS_TOPIC_ATTRIBUTES)) == 0) ||
+                    (ev->topic_len >= 34 &&
+                     strncmp(ev->topic, "v1/devices/me/attributes/response/", 34) == 0)) {
+                    ESP_LOGI(TAG, "MASTIFY Shared Attributes: %s", buf);
+                    handle_ota_attributes(buf, gms_mqtt2_settings.host, gms_mqtt2_settings.token);
+                }
+            }
+            break;
+        }
         case MQTT_EVENT_ERROR:
             ESP_LOGW(TAG, "MASTIFY MQTT 2 connection error");
             break;
@@ -1741,6 +1838,12 @@ static void publish(const gms_measurement_t *s)
             ",\"ewig_raw_r09\":%u,\"ewig_raw_r10\":%u",
             (unsigned)s->ewig_raw[0], (unsigned)s->ewig_raw[1]);
     }
+    uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    const esp_app_desc_t *desc = esp_app_get_description();
+    const char *fw_ver = desc ? desc->version : "1.0.0";
+    json_add(json, sizeof(json), &used,
+             ",\"uptime_s\":%" PRIu32 ",\"buf_count\":0,\"reset_reason\":\"%s\",\"fw_ver\":\"%s\"",
+             uptime_s, get_reset_reason_str(), fw_ver);
     json_add(json, sizeof(json), &used, "}");
     if (used >= sizeof(json)) {
         ESP_LOGE(TAG, "JSON buffer overflow prevented");
@@ -1858,6 +1961,12 @@ static void publish_mastify(const gms_measurement_t *s)
              s->pressure_fault_test_active ? "pressure_A3" : "none",
              s->pressure_real_ma);
     if (first) return; // Schema requires at least one value.
+    uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    const esp_app_desc_t *desc = esp_app_get_description();
+    const char *fw_ver = desc ? desc->version : "1.0.0";
+    json_add(json, sizeof(json), &used,
+             ",\"uptime_s\":%" PRIu32 ",\"buf_count\":0,\"reset_reason\":\"%s\",\"fw_ver\":\"%s\"",
+             uptime_s, get_reset_reason_str(), fw_ver);
     json_add(json, sizeof(json), &used, "}}");
     if (used >= sizeof(json)) {
         ESP_LOGE(TAG, "MASTIFY JSON overflow");
@@ -2248,7 +2357,7 @@ void app_main(void) {
     xTaskCreatePinnedToCore(
         task_ota,
         "task_ota",
-        6144,
+        8192,
         NULL,
         1,
         NULL,
