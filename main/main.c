@@ -868,8 +868,11 @@ void gms_schedule_restart(void) {
 }
 
 /* =====================================================
-   WIFI EVENTS
+   WIFI EVENTS & AUTO-FALLBACK
    ===================================================== */
+
+static int s_wifi_retry_count = 0;
+static bool s_wifi_using_fallback = false;
 
 static void wifi_events(
     void *arg,
@@ -883,9 +886,7 @@ static void wifi_events(
         base == WIFI_EVENT &&
         event_id == WIFI_EVENT_STA_START
     ) {
-        if (gms_settings.ssid[0]) {
-            esp_wifi_connect();
-        }
+        esp_wifi_connect();
 
     } else if (
         base == WIFI_EVENT &&
@@ -904,24 +905,45 @@ static void wifi_events(
 
         ESP_LOGW(
             TAG,
-            "WiFi disconnected reason=%d",
-            e ? (int)e->reason : -1
+            "WiFi disconnected reason=%d (retry %d/3)",
+            e ? (int)e->reason : -1,
+            s_wifi_retry_count + 1
         );
 
-        if (gms_settings.ssid[0]) {
-            esp_wifi_connect();
+        s_wifi_retry_count++;
+        if (s_wifi_retry_count >= 3) {
+            s_wifi_retry_count = 0;
+            s_wifi_using_fallback = !s_wifi_using_fallback;
+            wifi_config_t new_cfg = {0};
+
+            if (s_wifi_using_fallback) {
+                ESP_LOGW(TAG, "Mencoba alternatif Wi-Fi: masch.internal");
+                strncpy((char *)new_cfg.sta.ssid, "masch.internal", sizeof(new_cfg.sta.ssid) - 1);
+                strncpy((char *)new_cfg.sta.password, "jlsrbz20@3", sizeof(new_cfg.sta.password) - 1);
+            } else {
+                const char *target_ssid = gms_settings.ssid[0] ? gms_settings.ssid : "aisyah";
+                ESP_LOGW(TAG, "Mencoba kembali Wi-Fi utama: %s", target_ssid);
+                strncpy((char *)new_cfg.sta.ssid, target_ssid, sizeof(new_cfg.sta.ssid) - 1);
+                strncpy((char *)new_cfg.sta.password, gms_settings.wifi_password, sizeof(new_cfg.sta.password) - 1);
+            }
+            new_cfg.sta.pmf_cfg.capable = true;
+            esp_wifi_set_config(WIFI_IF_STA, &new_cfg);
         }
+
+        esp_wifi_connect();
 
     } else if (
         base == IP_EVENT &&
         event_id == IP_EVENT_STA_GOT_IP
     ) {
         ip_event_got_ip_t *e = data;
+        s_wifi_retry_count = 0;
 
         ESP_LOGI(
             TAG,
-            "GMS STA IP: " IPSTR,
-            IP2STR(&e->ip_info.ip)
+            "WiFi TERKONEKSI! IP: " IPSTR " (SSID: %s)",
+            IP2STR(&e->ip_info.ip),
+            s_wifi_using_fallback ? "masch.internal" : (gms_settings.ssid[0] ? gms_settings.ssid : "aisyah")
         );
 
         xEventGroupSetBits(
@@ -1061,7 +1083,8 @@ static void wifi_start_apsta(void) {
     cfg_ap.ap.authmode =
         WIFI_AUTH_WPA2_PSK;
 
-    cfg_ap.ap.pmf_cfg.required = true;
+    cfg_ap.ap.pmf_cfg.required = false;
+    cfg_ap.ap.pmf_cfg.capable = false;
 
     /* WIFI STATION */
 
